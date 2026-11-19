@@ -1,0 +1,38 @@
+name: build-deb
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.x' }
+      - name: 读取版本号
+        id: v
+        run: echo "ver=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+      - name: 组装打包树
+        run: |
+          python3 pkg/make_pkg.py
+          python3 -m py_compile build/pi-midi-bridge_${{ steps.v.outputs.ver }}_all/usr/bin/pi-midi-bridge
+      - name: 构建 deb
+        run: |
+          dpkg-deb --build --root-owner-group \
+            build/pi-midi-bridge_${{ steps.v.outputs.ver }}_all \
+            build/pi-midi-bridge_${{ steps.v.outputs.ver }}_all.deb
+          dpkg-deb -I build/pi-midi-bridge_${{ steps.v.outputs.ver }}_all.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-midi-bridge_${{ steps.v.outputs.ver }}
+          path: build/*.deb
+      - name: 附加到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*.deb

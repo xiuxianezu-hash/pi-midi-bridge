@@ -1,0 +1,14 @@
+# pi-midi-bridge 运行参数（改完 systemctl reload 或 restart）
+
+# 蓝牙适配器：填 MAC 时按 MAC 自动找 hci 索引；直接填索引（0/1）也行
+HCI_ADDR=B8:27:EB:A9:C3:C4
+
+# 桥使用的 ALSA 虚拟 MIDI 口（snd-virmidi 提供）
+VIRMIDI=/dev/snd/midiC2D0
+VIRMIDI_PORT=24:0
+
+# 1=打开 BLE 增强 ATT（macOS 上会挂，默认关闭）
+EATT=0
+
+# 1=打印每条消息的十六进制原始字节
+DEBUG=0

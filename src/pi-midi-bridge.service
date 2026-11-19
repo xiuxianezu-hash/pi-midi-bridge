@@ -1,0 +1,22 @@
+[Unit]
+Description=pi-midi-bridge - BLE-MIDI 外设 + ALSA/RTP-MIDI 路由
+Documentation=file:/usr/share/doc/pi-midi-bridge/README.md
+After=network-online.target rtpmidid.service sound.target
+Wants=rtpmidid.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/pi-midi-bridge
+# BlueZ 必须先让位：hci 要被 bumble 以 HCI_CHANNEL_USER 独占，
+# 且 BlueZ 自带的 BLE-MIDI GATT 服务会抢 03B80E5A 这个 UUID
+ExecStartPre=/usr/lib/pi-midi-bridge/hw_init.sh
+ExecStart=/var/lib/pi-midi-bridge/venv/bin/python /usr/bin/pi-midi-bridge
+ExecStartPost=/usr/lib/pi-midi-bridge/wire_alsa.sh
+ExecReload=/bin/sh -c '/bin/kill -HUP $MAINPID; sleep 1; /usr/lib/pi-midi-bridge/rewire_virmidi.sh'
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/pi-midi-bridge.log
+StandardError=append:/var/log/pi-midi-bridge.log
+
+[Install]
+WantedBy=multi-user.target
