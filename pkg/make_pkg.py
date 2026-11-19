@@ -103,8 +103,11 @@ fi
 # 3.5) 收紧 rtpmidid 的 mDNS 广播（只保留会话端口，别把每个 ALSA 口都广播出去）
 if [ -f /etc/rtpmidid/default.ini ]; then
   if python3 /usr/lib/pi-midi-bridge/rtpmidid_patch.py; then
+    # 重启 rtpmidid 时先停网页观察器，否则它会把自己也广播成一个 RTP-MIDI 服务
+    systemctl stop pi-midi-web 2>/dev/null || true
     systemctl restart rtpmidid 2>/dev/null || true
     sleep 2
+    systemctl start pi-midi-web 2>/dev/null || true
   fi
 fi
 
