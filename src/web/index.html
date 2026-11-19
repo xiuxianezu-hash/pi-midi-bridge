@@ -47,6 +47,9 @@ svg{display:block}
 #mon{height:300px;overflow:auto;background:#12151b;border:1px solid var(--line);border-radius:10px;padding:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#c9d0dc}
 #mon div{padding:1px 0;border-bottom:1px dashed #1e2431}
 .hint{font-size:11px;color:var(--dim);margin-top:6px}
+#ltable td{padding:3px 4px}
+#ltable tr.hl td{background:#1d3a31}
+#ltable select{font-size:11px;padding:4px 6px}
 </style>
 </head>
 <body>
@@ -81,19 +84,24 @@ svg{display:block}
 
   <div class="card">
     <div class="panel on" id="p-g">
-      <h2>连线图 — 点两个端口即连接，点连线即断开</h2>
-      <div class="form" style="grid-template-columns:auto auto 1fr auto auto">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b94a3">
-          <input type="checkbox" id="both" style="width:auto"> 双向连接</label>
+      <h2>连线表 — 选好「源端口 / 目的端口」，点「应用」下发到树莓派</h2>
+      <table id="ltable">
+        <thead><tr><th style="width:46%">源端口（MIDI 从哪出来）</th><th style="width:26px;text-align:center">→</th><th style="width:46%">目的端口（送到哪去）</th><th></th></tr></thead>
+        <tbody id="link-rows"></tbody>
+      </table>
+      <div class="form" style="grid-template-columns:auto auto 1fr auto auto;margin-top:10px">
+        <button id="lt-add">＋ 添加一行</button>
+        <button class="pri" id="lt-apply">应用</button>
+        <span class="mono" id="lt-state">-</span>
+        <button id="lt-reload">从设备重新载入</button>
         <select id="gfilter" style="width:130px">
           <option value="">全部连线</option><option value="ext">只看外部接口</option><option value="int">只看内部链接</option>
         </select>
-        <span class="mono" style="font-size:11px">━ 橙实线=外部(RTP/网络)　┅ 灰虚线=内部(虚拟口/桥接)</span>
-        <button id="clearlinks">清空非 System</button>
-        <button id="grefresh">刷新</button>
       </div>
-      <div id="graph" style="margin-top:10px"></div>
-      <div class="legend" id="ghint">已选源：无</div>
+      <div class="legend" id="lt-hint">表格就是真实配置：一条线 = 一行。改完点「应用」才下发；点「从设备重新载入」可放弃修改。</div>
+      <h2 style="margin-top:18px">连线效果预览（只读）— 橙色实线=外部 RTP 接口　灰色虚线=内部桥接</h2>
+      <div id="graph"></div>
+      <div class="legend" id="ghint">-</div>
     </div>
 
     <div class="panel" id="p-m">
@@ -149,6 +157,7 @@ svg{display:block}
 </main>
 <div id="toast"></div>
 <script>
+window.onerror=(m,src,l)=>{const g=document.getElementById('ghint');if(g)g.textContent='JS 错误: '+m+' @line '+l;console.error(m,l);};
 let TOKEN = localStorage.getItem('pimidi.token') || '';
 let STATE = null, SEL = null, MSINCE = 0, MTIMER = null, CURTAB = 'g';
 
@@ -160,13 +169,30 @@ const post=(p,o)=>api(p,{method:'POST',headers:{'Content-Type':'application/json
 const wrap=n=>n.replace(/\s+/g,' ').trim();
 function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 const portLabel=(c,p)=>c.id+':'+p.id+'  '+wrap(p.name);
+function allPorts(){
+  const out=[];
+  (STATE.alsa||[]).filter(c=>c.ports.length&&c.id!==0&&!/PipeWire|Through/.test(c.name))
+    .forEach(c=>c.ports.forEach(p=>out.push({c,p})));
+  return out;
+}
 
 /* ---------- 状态刷新 ---------- */
 async function refresh(){
   try{ STATE = await api('/api/state') }catch(e){ document.getElementById('tick').textContent='连接失败'; return }
   document.getElementById('ver').textContent='v'+STATE.version;
   document.getElementById('tick').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});
-  renderBle(); renderRtp(); fillSelects(); fillDevFilter(); renderTable(); renderPresets(); renderRestore(); renderGraph(); if(MBUF.length) renderMon();
+  const steps=[['renderBle',renderBle],['renderRtp',renderRtp],['fillSelects',fillSelects],
+    ['fillDevFilter',fillDevFilter],['renderTable',renderTable],['renderPresets',renderPresets],
+    ['renderRestore',renderRestore],
+    ['表格',()=>{ if(LT===null) ltReload(); else renderLinkTable(); }],['renderGraph',renderGraph]];
+  for(const [n,fn] of steps){
+    try{ fn() }catch(e){
+      const g=document.getElementById('ghint');
+      if(g) g.textContent='渲染出错于 '+n+'：'+e.message;
+      console.error(n,e); break;
+    }
+  }
+  if(MBUF.length) renderMon();
 }
 
 function renderBle(){
@@ -197,10 +223,6 @@ function renderRtp(){
   document.getElementById('rtp-list').innerHTML=html;
 }
 
-function allPorts(){
-  const out=[]; STATE.alsa.forEach(c=>c.ports.forEach(p=>out.push({c,p})));
-  return out;
-}
 function fillSelects(){
   const popts=allPorts().map(o=>'<option value="'+o.c.id+':'+o.p.id+'">'+portLabel(o.c,o.p)+'</option>').join('');
   const mopts='<option value="all">★ 全部端口（全局）</option>'+popts;
@@ -212,7 +234,7 @@ function renderTable(){
   let rows='';
   (STATE.links||[]).forEach(([s,d],i)=>{
     rows+='<tr><td>'+s+'</td><td>'+d+'</td><td style="text-align:right">'+
-          '<button class="danger" onclick="unlinkPair(\''+s+'\',\''+d+'\')">断开</button></td></tr>';
+          '<button class="danger" onclick="rbUnlink(\''+s+'\',\''+d+'\')">断开</button></td></tr>';
   });
   document.getElementById('al-links').innerHTML=rows||'<tr><td class="mono">还没有任何路由</td><td></td><td></td></tr>';
 }
@@ -296,63 +318,79 @@ function renderGraph(){
     g+='<path class="cable" d="M'+o.x+' '+o.y+' L'+o.x+' '+lane+' L'+i.x+' '+lane+' L'+i.x+' '+i.y+'" '+
        'stroke="'+col+'" stroke-width="'+(ext?2.4:1.4)+'" '+
        (ext?'':'stroke-dasharray="6 4"')+' fill="none" style="cursor:pointer" '+
-       'data-a="'+a+'" data-b="'+b+'" onclick="unlinkPair(\''+a+'\',\''+b+'\')"/>';
+       'data-a="'+a+'" data-b="'+b+'" onclick="ltFocus(\''+a+'\',\''+b+'\')"/>';
     g+='<circle cx="'+i.x+'" cy="'+i.y+'" r="3" fill="'+col+'"/>';
     drawn++;
   });
   window.__drawn=drawn;
   document.getElementById('graph').innerHTML='<svg width="'+W+'" height="'+H+'" xmlns="http://www.w3.org/2000/svg">'+g+'</svg>';
-  bindPorts();
-  document.getElementById('ghint').textContent = (SEL
-    ? ('已选源 '+SEL+' — 拖到目的端口松开即连  ')
-    : '从端口空心圆按住拖到另一个端口松开 = 画线连接；单击端口选中也可  ') +
-    '｜ 现有连线 '+(STATE.links||[]).length+' 条 · 端口 '+Object.keys(G.ports).length+' 个 · 画出 '+(window.__drawn||0)+' 条';
+  document.getElementById('ghint').textContent =
+    '预览基于当前已生效的连线：共 '+drawn+' 条 / 端口 '+Object.keys(G.ports).length+' 个。点一条线可跳到上表对应行。';
 }
-function bindPorts(){
-  document.querySelectorAll('#graph g.port').forEach(el=>{
-    el.addEventListener('mousedown',ev=>{ev.preventDefault(); startDrag(el.dataset.key,ev)});
+let LT=null, LTSEL='';
+function portList(){
+  const out=[];
+  (STATE.alsa||[]).filter(c=>c.id!==0&&!/PipeWire|Through/.test(c.name)).forEach(c=>{
+    (c.ports||[]).forEach(p=>out.push({key:c.id+':'+p.id, dev:c.name+((c.id>=24&&c.id<=27)?'（虚拟口）':(c.id===128?'（RTP 网关）':'')), name:p.name}));
   });
+  return out;
 }
-function startDrag(key,ev){
-  const q=G.ports[key]; if(!q) return;
-  SEL=key; renderGraph();
-  const o=portAnchorOut(G.ports[key]);
-  DRAG={from:key};
-  const svg=document.querySelector('#graph svg');
-  document.getElementById('ghint').textContent='正在从 '+key+' 拖线…';
-  const path=document.createElementNS('http://www.w3.org/2000/svg','path');
-  path.setAttribute('stroke','#41c9a0'); path.setAttribute('stroke-width','2'); path.setAttribute('pointer-events','none');
-  path.setAttribute('stroke-dasharray','5 4'); path.setAttribute('fill','none');
-  svg.appendChild(path);
-  const move=e=>{
-    const t=svgPt(e); const mx=(o.x+t.x)/2;
-    path.setAttribute('d','M'+o.x+' '+o.y+' C'+mx+' '+o.y+' '+mx+' '+t.y+' '+t.x+' '+t.y);
-  };
-  const up=e=>{
-    document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up);
-    if(path.parentNode) path.parentNode.removeChild(path);
-    const el=document.elementFromPoint(e.clientX,e.clientY);
-    const gNode=el&&el.closest?el.closest('g.port'):null;
-    const target=gNode&&gNode.dataset.key;
-    if(target&&target!==key) finishDrag(key,target);
-    else { SEL=null; renderGraph(); }
-  };
-  document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+function optsHtml(cur){
+  let h=''; const groups={}; const order=[];
+  portList().forEach(p=>{ if(!groups[p.dev]){groups[p.dev]=[]; order.push(p.dev)} groups[p.dev].push(p) });
+  order.forEach(dev=>{
+    h+='<optgroup label="'+escapeHtml(dev)+'">';
+    groups[dev].forEach(p=>{
+      h+='<option value="'+p.key+'"'+(p.key===cur?' selected':'')+'>'+p.key+'　'+escapeHtml(wrap(p.name).slice(0,22))+'</option>';
+    });
+    h+='</optgroup>';
+  });
+  return h;
 }
-async function finishDrag(src,dst){
-  const both=document.getElementById('both').checked;
-  const r=await post('/api/alsa',{op:'link',src,dst,both});
-  toast(r.ok?('已连线 '+src+' → '+dst+(both?'（双向）':'')):('失败：'+(r.out||'')));
-  SEL=null; refresh();
+function currentSet(){ return (STATE.links||[]).filter(x=>!x[0].startsWith('0:')&&!x[1].startsWith('0:')).map(x=>x[0]+'|'+x[1]) }
+function pendingText(){
+  const cur=currentSet(), want=(LT||[]).map(x=>x[0]+'|'+x[1]);
+  const add=want.filter(x=>!cur.includes(x)).length;
+  const del=cur.filter(x=>!want.includes(x)).length;
+  return (add||del)?('未应用：新增 '+add+' 条 / 删除 '+del+' 条'):'与当前生效一致';
 }
-async function pickNode(key){
-  if(!SEL){ SEL=key; renderGraph(); return }
-  if(SEL===key){ SEL=null; renderGraph(); return }
-  await finishDrag(SEL,key);
+function renderLinkTable(){
+  const rows=(LT||[]).map((r,i)=>
+    '<tr'+(LTSEL===(r[0]+'|'+r[1])?' class="hl"':'')+'>'+
+    '<td><select onchange="ltSet('+i+',0,this.value)">'+optsHtml(r[0])+'</select></td>'+
+    '<td style="text-align:center;color:#7b869b">→</td>'+
+    '<td><select onchange="ltSet('+i+',1,this.value)">'+optsHtml(r[1])+'</select></td>'+
+    '<td><button class="danger" onclick="ltDel('+i+')">删除</button></td></tr>').join('');
+  document.getElementById('link-rows').innerHTML = rows || '<tr><td colspan="4" style="color:#8b94a3;padding:10px">还没有连线 — 点下面「＋ 添加一行」开始。</td></tr>';
+  document.getElementById('lt-state').textContent = pendingText();
 }
-async function unlinkPair(s,d){
-  if(!confirm('断开 '+s+' → '+d+' ?'))return;
-  await post('/api/alsa',{op:'unlink',src:s,dst:d}); toast('已断开 '+s+' → '+d); refresh();
+function ltReload(){
+  LT = (STATE.links||[]).filter(x=>!x[0].startsWith('0:')&&!x[1].startsWith('0:')).map(x=>[x[0],x[1]]);
+  LTSEL=''; renderLinkTable();
+}
+function ltSet(i,j,v){ if(!LT[i])return; LT[i][j]=v; renderLinkTable() }
+function ltDel(i){ if(!LT[i])return; LT.splice(i,1); renderLinkTable() }
+function ltAdd(){
+  const ps=portList(); const a=ps[0]?ps[0].key:'', b=ps[ps.length-1]?ps[ps.length-1].key:'';
+  if(!LT) LT=[]; LT.push([a,b]); renderLinkTable();
+}
+function ltFocus(a,b){
+  LTSEL=a+'|'+b; renderLinkTable();
+  const i=(LT||[]).findIndex(r=>r[0]===a&&r[1]===b);
+  const tr=i>=0?document.querySelectorAll('#link-rows tr')[i]:null;
+  if(tr&&tr.scrollIntoView) tr.scrollIntoView({block:'center'});
+}
+async function rbUnlink(a,b){
+  if(!confirm('断开 '+a+' → '+b+' ?')) return;
+  await post('/api/alsa',{op:'unlink',src:a,dst:b}); toast('已断开 '+a+' → '+b); await refresh(); ltReload();
+}
+async function ltApply(){
+  if(!LT||!LT.length) return toast('表格是空的，没有可应用的连线');
+  const r=await post('/api/alsa',{op:'sync',links:LT});
+  if(!r.ok) return toast('失败：'+(r.error||r.out||''));
+  toast('已应用：新增 '+(r.added||[]).length+' 条，删除 '+(r.removed||[]).length+' 条'+
+        ((r.skipped||[]).length?'，跳过 '+(r.skipped||[]).length+' 条（端口已不存在）':''));
+  await refresh(); ltReload();
 }
 async function rtpConnect(hostname,port,name){
   const r=await post('/api/rtp',{op:'connect',hostname,port,name});
@@ -454,13 +492,10 @@ document.getElementById('preset-save').onclick=async()=>{
   const name=document.getElementById('preset-name').value.trim(); if(!name)return toast('先起个名字');
   const r=await post('/api/presets',{op:'save',name}); toast(r.ok?'已保存':'失败：'+(r.error||'')); refresh();
 };
-document.getElementById('grefresh').onclick=()=>{SEL=null;refresh()};
+document.getElementById('lt-add').onclick=ltAdd;
+document.getElementById('lt-apply').onclick=ltApply;
+document.getElementById('lt-reload').onclick=ltReload;
 document.getElementById('gfilter').onchange=renderGraph;
-document.getElementById('clearlinks').onclick=async()=>{
-  if(!confirm('清空所有非 System 连线？'))return;
-  for(const [a,b] of (STATE.links||[])){ if(a.startsWith('0:')||b.startsWith('0:'))continue; await post('/api/alsa',{op:'unlink',src:a,dst:b}); }
-  toast('已清空'); refresh();
-};
 document.getElementById('auto-snap').onclick=async()=>{
   const r=await post('/api/autorestore',{snapshot:true}); toast('已记录 '+(r.links||[]).length+' 条连线'); refresh();
 };

@@ -25,7 +25,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 WEBROOT = os.environ.get("WEBROOT", "/usr/share/pi-midi-bridge/web")
 BIND = os.environ.get("WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
@@ -501,7 +501,35 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- 业务
     def _alsa(self, data):
-        op, src, dst = data.get("op"), data.get("src"), data.get("dst")
+        op = data.get("op")
+        if op == "sync":
+            # 一次性对齐：表格里的连线 = 目标状态，与当前实际做差集，只动非 System 连线
+            want = []
+            for it in (data.get("links") or []):
+                if not isinstance(it, (list, tuple)) or len(it) < 2:
+                    continue
+                a, b = it[0], it[1]
+                if isinstance(a, str) and isinstance(b, str) and ":" in a and ":" in b:
+                    if [a, b] not in want:
+                        want.append([a, b])
+            alive = {f"{c['id']}:{p['id']}" for c in alsa_state() if c["id"] != 0 for p in c["ports"]}
+            cur = [[a, b] for a, b in alsa_links() if not a.startswith("0:") and not b.startswith("0:")]
+            added, removed, skipped, kept = [], [], [], []
+            for a, b in want:
+                if a not in alive or b not in alive:
+                    skipped.append([a, b])
+                elif [a, b] in cur:
+                    kept.append([a, b])
+                else:
+                    subprocess.run(["aconnect", a, b], capture_output=True, text=True); added.append([a, b])
+            for a, b in cur:
+                if [a, b] not in want:
+                    subprocess.run(["aconnect", "-d", a, b], capture_output=True, text=True); removed.append([a, b])
+            record_links()
+            print(f"[web] 连线表应用：新增 {len(added)} / 保留 {len(kept)} / 删除 {len(removed)} / 跳过 {len(skipped)}", flush=True)
+            return self._ok({"ok": True, "added": added, "removed": removed,
+                             "skipped": skipped, "kept": kept})
+        src, dst = data.get("src"), data.get("dst")
         if not (src and dst) or ":" not in src or ":" not in dst:
             return self._err("src/dst 需形如 24:0")
         cmd = {"link": ["aconnect", src, dst], "unlink": ["aconnect", "-d", src, dst]}
