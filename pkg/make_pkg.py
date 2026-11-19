@@ -45,6 +45,7 @@ FILES = {
     "usr/lib/pi-midi-bridge/hw_init.sh": ("755", (SRC / "hw_init.sh").read_text()),
     "usr/lib/pi-midi-bridge/wire_alsa.sh": ("755", (SRC / "wire_alsa.sh").read_text()),
     "usr/lib/pi-midi-bridge/rewire_virmidi.sh": ("755", (SRC / "rewire_virmidi.sh").read_text()),
+    "usr/lib/pi-midi-bridge/rtpmidid_patch.py": ("755", (SRC / "rtpmidid_patch.py").read_text()),
     "lib/systemd/system/pi-midi-bridge.service": ("644", (SRC / "pi-midi-bridge.service").read_text()),
     "etc/default/pi-midi-bridge": ("644", (SRC / "pi-midi-bridge.default").read_text()),
     "usr/share/doc/pi-midi-bridge/README.md": ("644", (REPO / "README.md").read_text()),
@@ -97,6 +98,14 @@ fi
 if ! "$VENV/bin/python" -c 'import bumble' 2>/dev/null; then
   "$VENV/bin/pip" install --no-cache-dir -q "bumble==0.0.236" \\
      || echo "警告：bumble 安装失败，请手动执行 $VENV/bin/pip install bumble==0.0.236"
+fi
+
+# 3.5) 收紧 rtpmidid 的 mDNS 广播（只保留会话端口，别把每个 ALSA 口都广播出去）
+if [ -f /etc/rtpmidid/default.ini ]; then
+  if python3 /usr/lib/pi-midi-bridge/rtpmidid_patch.py; then
+    systemctl restart rtpmidid 2>/dev/null || true
+    sleep 2
+  fi
 fi
 
 # 4) 注册并启动

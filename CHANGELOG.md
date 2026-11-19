@@ -1,5 +1,13 @@
 # 更新记录
 
+## 1.8.0 — 2026-11-19
+
+- **收紧 RTP-MIDI 的 mDNS 广播**：macOS / Windows 的「会话和目录」原来会列出 7 条设备（`rpi3`、`Midi Through-Midi Through Port-0`、`Virtual Raw MIDI 1-0/1-1/1-2/1-3-VirMIDI…`、`aseqdump`），其中只有 `rpi3` 是真会话。
+  根因是 rtpmidid 的 `[alsa_hw_auto_export]`（`type=hardware`）把本机**每个内核 ALSA 端口**分别当成一个 RTP-MIDI 服务广播出去。已由新增的 `usr/lib/pi-midi-bridge/rtpmidid_patch.py` 在安装时把该段注释掉（自动备份 `default.ini.bak-announce-<时间>`，幂等）。
+- **`[alsa_announce]` 必须保留**：它同时提供 `Network Export`（`128:0`）这个出网口，删掉它 Pi→RTP 方向直接断（实测确认：关掉后 128:0 消失，只剩远端 peer 端口）。
+- `mdns.remove` 控制口已摸清：参数必须是 `{"name": <字符串>, "port": <数字>}`，但对 ALSA 端口类广播会报 `type_error 302`（时而成功），不可靠，所以改用配置文件层面解决。
+- 实测结果：`rtpmidid status` 的广播列表从 7 条降到 **2 条**（`rpi3` + `aseqdump`，后者是本机网页观察器自己，随 `pi-midi-web` 存在），macOS「会话和目录」从 7 行降到 4 行（含 Mac 本机与 Windows 各一条）；`128:0`、入向 peer 端口、桥的自动连线全部正常。
+
 ## 1.7.9 — 2026-11-19
 
 - **琴键渲染下沉到前端，并给音符开高速通道**：新增 `GET /api/notes?since=`，只返回 `note_on/note_off/cc` 的最小字段（`nn/t/key/dir/kind/d1/d2`），前端每 **120ms** 拉一次专门刷钢琴；左侧输入/输出表格仍走 `/api/observe` 每 700ms。键盘延迟从 700ms 降到 120ms，树莓派每次少序列化十六进制/释义/设备名。
