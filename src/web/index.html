@@ -163,26 +163,22 @@ const MAXROWS=600;
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 function tm(t){const d=new Date(t*1000);return d.toLocaleTimeString("zh-CN",{hour12:false})+"."+String(d.getMilliseconds()).padStart(3,"0");}
 
-/* ---- 88 键钢琴 ---- */
+/* ---- 88 键钢琴（布尔状态机 + 延音踏板）---- */
 const P_FIRST=21, P_LAST=108, BLACK_PC=[1,3,6,8,10], PCNM=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const KEYS=new Map(), ACTIVE=new Map(), HOLD={};
+const KEYS=new Map(), ACTIVE=new Map(), WATCH=new Map(), SUSTAINED=new Set();
 const WHITE_W=100/52;
-let pianoTotalWhite=0;
+let sustainOn=false, statPending=false, SUS_T=null;
 
 function buildPiano(){
-  const whites=[], blacks=[];
-  let wi=0;
+  const whites=[], blacks=[]; let wi=0;
   for(let m=P_FIRST;m<=P_LAST;m++){
     const pc=m%12, black=BLACK_PC.includes(pc);
-    if(!black){ whites.push({m,wi,pc}); wi++; }
-    else blacks.push({m,wi,pc});
+    if(!black){ whites.push({m,wi,pc}); wi++; } else blacks.push({m,wi,pc});
   }
-  pianoTotalWhite=wi;
   const wh=[], bh=[];
   whites.forEach(k=>{
     const oct=Math.floor(k.m/12)-1;
-    wh.push(`<div class="wk" data-m="${k.m}" style="left:${(k.wi*WHITE_W).toFixed(3)}%;width:${WHITE_W.toFixed(3)}%">
-      ${k.pc===0?`<span class="lab">C${oct}</span>`:""}</div>`);
+    wh.push(`<div class="wk" data-m="${k.m}" style="left:${(k.wi*WHITE_W).toFixed(3)}%;width:${WHITE_W.toFixed(3)}%">${k.pc===0?`<span class="lab">C${oct}</span>`:""}</div>`);
   });
   blacks.forEach(k=>{
     const bw=WHITE_W*0.62;
@@ -190,54 +186,79 @@ function buildPiano(){
   });
   const el=document.getElementById("piano");
   el.innerHTML=wh.join("")+bh.join("");
-  el.style.height=el.style.height||"96px";
   document.querySelectorAll("#piano [data-m]").forEach(n=>KEYS.set(+n.dataset.m,n));
 }
 
 function midiName(m){return PCNM[m%12]+(Math.floor(m/12)-1);}
 
-function paintKey(m){
+function stateAll(){ // 合并踏板上挂起的键
+  const names=[]; ACTIVE.forEach((v,k)=>{ if(v.in||v.out) names.push(k); });
+  if(statPending) return; statPending=true;
+  setTimeout(()=>{
+    statPending=false;
+    const n2=[]; ACTIVE.forEach((v,k)=>{ if(v.in||v.out) n2.push(k); });
+    const s=document.getElementById("pianostats");
+    if(s) s.textContent=n2.length?`按下的键（${n2.length}）：`+n2.map(midiName).join(" "):"";
+  },60);
+  return names;
+}
+
+function paint(m){
   const el=KEYS.get(m); if(!el) return;
   const a=ACTIVE.get(m)||{};
   el.classList.toggle("on-in",!!a.in);
   el.classList.toggle("on-out",!!a.out);
-  const names=[];
-  ACTIVE.forEach((v,k)=>{ if(v.in||v.out) names.push(midiName(k)); });
-  const s=document.getElementById("pianostats");
-  if(s) s.textContent=names.length?`按下的键：${names.join(" ")}`:"";
 }
 
-function press(m,dir){
+function keyOn(m,dir){
   if(!KEYS.has(m)) return;
-  let a=ACTIVE.get(m); if(!a){a={in:0,out:0};ACTIVE.set(m,a);}
-  a[dir]=(a[dir]||0)+1;
-  paintKey(m);
-  const hk=m+":"+dir;
-  clearTimeout(HOLD[hk]);
-  HOLD[hk]=setTimeout(()=>{ const b=ACTIVE.get(m); if(b&&b[dir]>0){b[dir]=0;paintKey(m);} },4000);
+  let a=ACTIVE.get(m); if(!a){a={in:false,out:false};ACTIVE.set(m,a);}
+  a[dir]=true; SUSTAINED.delete(m); paint(m); stateAll();
+  clearTimeout(WATCH.get(m));
+  WATCH.set(m,setTimeout(()=>{  // 5s 兜底释键：防丢 off 事件卡键
+    const b=ACTIVE.get(m); if(!b) return;
+    b[dir]=false; if(!b.in&&!b.out) ACTIVE.delete(m);
+    paint(m); stateAll();
+  },5000));
 }
 
-function release(m,dir){
+function keyOff(m,dir){
   const a=ACTIVE.get(m); if(!a) return;
-  const hk=m+":"+dir;
-  clearTimeout(HOLD[hk]);
-  HOLD[hk]=setTimeout(()=>{
-    const b=ACTIVE.get(m); if(!b) return;
-    b[dir]=Math.max(0,(b[dir]||0)-1);
-    paintKey(m);
-  },180);
+  if(sustainOn){ SUSTAINED.add(m); return; }   // 踏板踩着：先挂住
+  a[dir]=false; if(!a.in&&!a.out) ACTIVE.delete(m);
+  paint(m); stateAll();
+}
+
+function releasePedal(){
+  SUSTAINED.forEach(m=>{
+    const a=ACTIVE.get(m); if(!a){SUSTAINED.delete(m);return;}
+    a.in=false; a.out=false; ACTIVE.delete(m); paint(m);
+  });
+  SUSTAINED.clear(); stateAll();
 }
 
 function pianoFeed(events){
+  let touched=false;
   events.forEach(e=>{
     if(S.dev && e.key!==S.dev) return;
+    if(e.kind==="cc"){
+      if(Number(e.d1)===64){
+        const v=Number(e.d2)||0, was=sustainOn;
+        sustainOn=v>=64;
+        clearTimeout(SUS_T);
+        if(sustainOn) SUS_T=setTimeout(()=>{ if(sustainOn){sustainOn=false;releasePedal();} },12000); // 12s 无更新自动松踏板
+        if(was&&!sustainOn) releasePedal();
+      }
+      return;
+    }
     if(e.kind!=="note_on" && e.kind!=="note_off") return;
-    const m=Number(e.d1);
-    if(!Number.isFinite(m)||!KEYS.has(m)) return;
-    const on=(e.kind==="note_on" && Number(e.d2||0)>0);
+    const m=Number(e.d1); if(!Number.isFinite(m)||!KEYS.has(m)) return;
     const dir=e.dir==="in"?"in":"out";
-    on?press(m,dir):release(m,dir);
+    const on=(e.kind==="note_on" && Number(e.d2||0)>0);
+    on?keyOn(m,dir):keyOff(m,dir);
+    touched=true;
   });
+  if(touched) stateAll();
 }
 buildPiano();
 
@@ -365,8 +386,9 @@ document.getElementById("pause").onclick=e=>{
 };
 document.getElementById("clear").onclick=()=>{
   S.inRows=[];S.outRows=[];S.notices=[];renderAll();
-  ACTIVE.clear();Object.keys(HOLD).forEach(k=>{clearTimeout(HOLD[k]);delete HOLD[k];});
-  KEYS.forEach((el,m)=>paintKey(m));
+  WATCH.forEach(t=>clearTimeout(t)); WATCH.clear();
+  ACTIVE.clear(); SUSTAINED.clear(); sustainOn=false;
+  KEYS.forEach((el,m)=>paint(m));
   document.getElementById("pianostats").textContent="";
 };
 (function(){
