@@ -25,7 +25,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.7.0"
+VERSION = "1.7.2"
 WEBROOT = os.environ.get("WEBROOT", "/usr/share/pi-midi-bridge/web")
 BIND = os.environ.get("WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
@@ -381,6 +381,76 @@ def apply_links(pairs, clear_first=True):
 
 
 
+
+# ---------------------------------------------------------------- MIDI 报文还原（给十六进制列用）
+RT_BYTES = {"clock": 0xF8, "start": 0xFA, "continue": 0xFB, "stop": 0xFC,
+            "active": 0xFE, "reset": 0xFF, "tune": 0xF9}
+HEX_PAIRS = re.compile(r"\b([0-9A-Fa-f]{2})\b")
+
+
+def midi_bytes(rec):
+    """把 aseqdump 解析出来的字段还原成真实 MIDI 字节（MIDI-OX 那种十六进制列）"""
+    kind, ch = rec.get("kind"), rec.get("chan") or 0
+    d1, d2 = rec.get("d1"), rec.get("d2")
+    if kind == "note_on" and d1 is not None and d2 is not None:
+        return [0x90 | ch, d1 & 0x7F, d2 & 0x7F]
+    if kind == "note_off" and d1 is not None and d2 is not None:
+        return [0x80 | ch, d1 & 0x7F, d2 & 0x7F]
+    if kind == "cc" and d1 is not None and d2 is not None:
+        return [0xB0 | ch, d1 & 0x7F, d2 & 0x7F]
+    if kind == "pc" and d1 is not None:
+        return [0xC0 | ch, d1 & 0x7F]
+    if kind == "after" and d1 is not None:
+        return [0xD0 | ch, d1 & 0x7F]
+    if kind == "pb" and d1 is not None:
+        v = max(0, min(16383, d1 + 8192))
+        return [0xE0 | ch, v & 0x7F, (v >> 7) & 0x7F]
+    if kind == "sysex":
+        hexes = HEX_PAIRS.findall(rec.get("text") or rec.get("event") or "")
+        return [int(h, 16) for h in hexes] or None
+    if kind == "realtime":
+        low = (rec.get("event") or "").lower()
+        for k, b in RT_BYTES.items():
+            if k in low:
+                return [b]
+        if "song position" in low:
+            return None
+        return None
+    return None
+
+
+def midi_hex(rec):
+    b = midi_bytes(rec)
+    return " ".join(f"{x:02X}" for x in b) if b else ""
+
+
+EVENT_LABEL = {"note_on": "音符开", "note_off": "音符关", "cc": "控制变化", "pc": "音色切换",
+               "pb": "弯音", "sysex": "系统专用", "clock": "时钟", "after": "触后",
+               "realtime": "实时", "other": "其它"}
+
+
+def midi_desc(rec):
+    """中文释义，形如「音符开 C5 力度127 · 通道1」"""
+    kind = rec.get("kind")
+    label = EVENT_LABEL.get(kind, "其它")
+    note, d1, d2, ch = rec.get("note"), rec.get("d1"), rec.get("d2"), rec.get("chan")
+    if kind in ("note_on", "note_off") and note:
+        return f"{label} {note} 力度{d2} · 通道{ch}"
+    if kind == "cc":
+        return f"{label} 控制器{d1} = {d2} · 通道{ch}"
+    if kind == "pc":
+        return f"{label} 音色{d1} · 通道{ch}"
+    if kind == "pb":
+        return f"{label} {d1} · 通道{ch}"
+    if kind == "after":
+        return f"{label} {d1} · 通道{ch}"
+    if kind == "sysex":
+        return f"{label} {rec.get('text') or ''}".strip()
+    if kind in ("clock", "realtime"):
+        return rec.get("event") or label
+    return (rec.get("text") or rec.get("event") or label).strip()
+
+
 # ---------------------------------------------------------------- 纯观测：全局 MIDI 观察器
 CAT_BLE = "蓝牙 Pi-MIDI"
 CAT_VIR = "内部虚拟口"
@@ -485,6 +555,9 @@ class Observer:
         self.links = {}
         self.counters = {}
         self.sig = ""
+        self.notices = []
+        self.note_n = 0
+        self.prev_dev = None
         self.started = time.time()
         self.watchdog = threading.Thread(target=self._watch, daemon=True)
 
@@ -500,6 +573,25 @@ class Observer:
         with self.lock:
             self.port_key, self.devices, self.links, self.ignore = pk, dv, lk, ig
             self.sig = "|".join(sorted(pk))
+        self.diff_notice(dv)
+
+    def notice(self, text, kind="info"):
+        with self.lock:
+            self.note_n += 1
+            self.notices.append({"n": self.note_n, "t": round(time.time(), 3),
+                                 "kind": kind, "text": text})
+            if len(self.notices) > 300:
+                del self.notices[:len(self.notices) - 300]
+
+    def diff_notice(self, devs):
+        """端口出现 / 消失 → 连接类提示"""
+        cur = {(d["key"], d["name"]) for d in devs}
+        if self.prev_dev is not None:
+            for k, n in sorted(cur - self.prev_dev):
+                self.notice(f"端口出现：{n}（{k}）", "conn")
+            for k, n in sorted(self.prev_dev - cur):
+                self.notice(f"端口消失：{n}（{k}）", "disc")
+        self.prev_dev = cur
 
     def _watch(self):
         while True:
@@ -540,6 +632,7 @@ class Observer:
             self.proc, self.spec = p, self.sig
         threading.Thread(target=self._run, args=(p,), daemon=True).start()
         print(f"[web] 观察器已订阅 {len(cand)} 个端口", flush=True)
+        self.notice(f"观察器已订阅 {len(cand)} 个端口", "info")
 
     def stop(self):
         with self.lock:
@@ -565,6 +658,13 @@ class Observer:
                 src = rec.get("src")
                 if not src:
                     continue
+                ev = (rec.get("event") or "").lower()
+                if "subscrib" in ev:                       # ALSA 的端口订阅/取消订阅通告，不是 MIDI 数据
+                    self.notice(("端口订阅：" if "unsub" not in ev else "端口取消订阅：")
+                                + (rec.get("text") or ""), "info")
+                    continue
+                if src.startswith("0:"):                   # System 广播层，不进事件流
+                    continue
                 with self.lock:
                     key = self.port_key.get(src, src)
                     name = next((d["name"] for d in self.devices if d["key"] == key), src)
@@ -573,7 +673,7 @@ class Observer:
                             "key": key, "name": name, "chan": rec["chan"],
                             "kind": rec["kind"], "event": rec["event"],
                             "d1": rec["d1"], "d2": rec["d2"], "note": rec["note"],
-                            "raw": line}
+                            "hex": midi_hex(rec), "desc": midi_desc(rec), "raw": line}
                     self.events.append(dict(base, dir="out"))
                     self._bump(key, "out")
                     for dst in self.links.get(src, []):
@@ -592,13 +692,16 @@ class Observer:
                 self.proc = None
 
     # ---- 查询
-    def since(self, since):
+    def since(self, since, since_note=0):
         with self.lock:
             return ([e for e in self.events if e["n"] > since], self.n,
-                    list(self.devices), dict(self.counters), self.proc is not None)
+                    list(self.devices), dict(self.counters), self.proc is not None,
+                    [x for x in self.notices if x["n"] > since_note], self.note_n)
 
 
 OBSERVER = Observer()
+BLE_PREV = None
+PEER_PREV = [None]
 
 
 # ---------------------------------------------------------------- HTTP
@@ -663,7 +766,17 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
             since = int((q.get("since") or ["0"])[0] or 0)
-            evs, last, devs, counters, running = OBSERVER.since(since)
+            since_note = int((q.get("note_since") or ["0"])[0] or 0)
+            evs, last, devs, counters, running, notices, note_last = OBSERVER.since(since, since_note)
+            bl = ble_state()
+            global BLE_PREV
+            if BLE_PREV is not None and bl["connected"] != BLE_PREV.get("connected"):
+                OBSERVER.notice(("蓝牙链路已连接：" + str(bl["peer"])) if bl["connected"]
+                                else "蓝牙链路断开（回到广播）", "conn" if bl["connected"] else "disc")
+            if BLE_PREV is not None and bl["advertising"] != BLE_PREV.get("advertising"):
+                OBSERVER.notice("BLE 开始广播 Pi-MIDI" if bl["advertising"] else "BLE 停止广播",
+                                "info")
+            BLE_PREV = bl
             rt = rtp_rpc("status").get("result") or {}
             SKIP_PEER = ("aseqdump", "network export", "midi through", "virtual raw midi",
                          "rpi3", "<->")
@@ -679,10 +792,18 @@ class Handler(BaseHTTPRequestHandler):
                               "recv": ((r.get("peer") or {}).get("stats") or {}).get("recv", 0),
                               "sent": ((r.get("peer") or {}).get("stats") or {}).get("sent", 0),
                               "type": r.get("type")})
+            names = {p["name"] for p in peers}
+            if PEER_PREV[0] is not None:
+                for nm in sorted(names - PEER_PREV[0]):
+                    OBSERVER.notice("RTP 对端加入：" + nm, "conn")
+                for nm in sorted(PEER_PREV[0] - names):
+                    OBSERVER.notice("RTP 对端离开：" + nm, "disc")
+            PEER_PREV[0] = names
             return self._ok({"version": VERSION, "ble": ble_state(),
                              "bridge": bridge_health(), "rtp": {"peers": peers},
                              "devices": devs, "counters": counters,
-                             "events": evs, "last": last, "running": running})
+                             "events": evs, "last": last, "running": running,
+                             "notices": notices, "note_last": note_last})
         if path == "/api/presets":
             if not self._auth():
                 return self._err("需要 token", 401)
