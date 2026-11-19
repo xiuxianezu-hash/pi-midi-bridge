@@ -157,7 +157,8 @@ const KINDS=[["note_on","音符开"],["note_off","音符关"],["cc","CC"],["pc",
              ["pb","弯音"],["sysex","SysEx"],["clock","时钟"],["after","触后"],["realtime","实时"],["other","其它"]];
 const CATORDER=["内部虚拟口","内部桥（RTP 引擎）","RTP 外部设备","其它"];
 const S={since:0, noteSince:0, paused:false, dev:"", kinds:new Set(), ch:"", q:"",
-         inRows:[], outRows:[], notices:[], counters:{}, evTotal:0, tPrev:0};
+         inRows:[], outRows:[], notices:[], counters:{}, evTotal:0, tPrev:0,
+         nkSince:0, nkAt:0};
 const MAXROWS=600;
 
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
@@ -191,8 +192,7 @@ function buildPiano(){
 
 function midiName(m){return PCNM[m%12]+(Math.floor(m/12)-1);}
 
-function stateAll(){ // 合并踏板上挂起的键
-  const names=[]; ACTIVE.forEach((v,k)=>{ if(v.in||v.out) names.push(k); });
+function stateAll(){ // 标题只做节流刷新，真正的键位绘制由 paint() 逐键完成
   if(statPending) return; statPending=true;
   setTimeout(()=>{
     statPending=false;
@@ -200,7 +200,6 @@ function stateAll(){ // 合并踏板上挂起的键
     const s=document.getElementById("pianostats");
     if(s) s.textContent=n2.length?`按下的键（${n2.length}）：`+n2.map(midiName).join(" "):"";
   },60);
-  return names;
 }
 
 function paint(m){
@@ -215,7 +214,8 @@ function keyOn(m,dir){
   let a=ACTIVE.get(m); if(!a){a={in:false,out:false};ACTIVE.set(m,a);}
   a[dir]=true; SUSTAINED.delete(m); paint(m); stateAll();
   clearTimeout(WATCH.get(m));
-  WATCH.set(m,setTimeout(()=>{  // 5s 兜底释键：防丢 off 事件卡键
+  WATCH.set(m,setTimeout(()=>{  // 5s 兜底释键：防丢 off 事件卡键（踏板踩住时不掐）
+    if(sustainOn){ WATCH.delete(m); return; }
     const b=ACTIVE.get(m); if(!b) return;
     b[dir]=false; if(!b.in&&!b.out) ACTIVE.delete(m);
     paint(m); stateAll();
@@ -224,7 +224,9 @@ function keyOn(m,dir){
 
 function keyOff(m,dir){
   const a=ACTIVE.get(m); if(!a) return;
-  if(sustainOn){ SUSTAINED.add(m); return; }   // 踏板踩着：先挂住
+  if(sustainOn){                                    // 踏板踩着：先挂住，交给 releasePedal
+    SUSTAINED.add(m); clearTimeout(WATCH.get(m)); WATCH.delete(m); return;
+  }
   a[dir]=false; if(!a.in&&!a.out) ACTIVE.delete(m);
   paint(m); stateAll();
 }
@@ -349,7 +351,7 @@ async function poll(){
     const d=await r.json();
     S.counters=d.counters||{};
     chips(d); renderDevStrip(d); calcRate(d);
-    pianoFeed(d.events||[]);
+    if(Date.now()-S.nkAt>2000) pianoFeed(d.events||[]);   // 高速通道断了才用主轮询兜底
     if(!S.paused){
       (d.events||[]).forEach(e=>{
         const arr=e.dir==="in"?S.inRows:S.outRows;
@@ -397,7 +399,20 @@ document.getElementById("clear").onclick=()=>{
   document.getElementById("fch").innerHTML=h;
 })();
 
-poll(); setInterval(poll,700);
+async function notesPoll(){                              // 钢琴专用：只拉轻量音符，前端 JS 渲染
+  try{
+    const r=await fetch(`/api/notes?since=${S.nkSince}`,{cache:"no-store"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const d=await r.json();
+    S.nkAt=Date.now();
+    pianoFeed(d.events||[]);
+    S.nkSince=Math.max(S.nkSince,d.last||0);
+  }catch(_){ /* 失败就退回主轮询的 events */ }
+}
+
+poll(); notesPoll();
+setInterval(poll,700);
+setInterval(notesPoll,120);
 </script>
 </body>
 </html>

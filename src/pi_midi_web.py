@@ -25,7 +25,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.7.8"
+VERSION = "1.7.9"
 WEBROOT = os.environ.get("WEBROOT", "/usr/share/pi-midi-bridge/web")
 BIND = os.environ.get("WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
@@ -557,6 +557,9 @@ class Observer:
         self.sig = ""
         self.notices = []
         self.note_n = 0
+        self.names = {}          # key -> 显示名（避免每条事件都线性扫 devices）
+        self.notes = []          # 轻量音符缓冲：只喂钢琴键盘，字段最小
+        self.nn = 0
         self.prev_dev = None
         self.started = time.time()
         self.watchdog = threading.Thread(target=self._watch, daemon=True)
@@ -572,6 +575,7 @@ class Observer:
             lk.setdefault(a, []).append(b)
         with self.lock:
             self.port_key, self.devices, self.links, self.ignore = pk, dv, lk, ig
+            self.names = {d["key"]: d["name"] for d in dv}
             self.sig = "|".join(sorted(pk))
         self.diff_notice(dv)
 
@@ -667,7 +671,7 @@ class Observer:
                     continue
                 with self.lock:
                     key = self.port_key.get(src, src)
-                    name = next((d["name"] for d in self.devices if d["key"] == key), src)
+                    name = self.names.get(key) or src
                     self.n += 1
                     base = {"n": self.n, "t": round(time.time(), 3), "port": src,
                             "key": key, "name": name, "chan": rec["chan"],
@@ -676,20 +680,34 @@ class Observer:
                             "hex": midi_hex(rec), "desc": midi_desc(rec), "raw": line}
                     self.events.append(dict(base, dir="out"))
                     self._bump(key, "out")
+                    self._note(base, "out", key)
                     for dst in self.links.get(src, []):
                         if dst in self.ignore:
                             continue
                         k2 = self.port_key.get(dst, dst)
-                        n2 = next((d["name"] for d in self.devices if d["key"] == k2), dst)
+                        n2 = self.names.get(k2) or dst
                         self.n += 1
                         self.events.append(dict(base, n=self.n, dir="in", key=k2,
                                                 name=n2, port=dst))
                         self._bump(k2, "in")
+                        self._note(base, "in", k2)
                     if len(self.events) > self.MAX:
                         del self.events[:len(self.events) - self.MAX]
         finally:
             with self.lock:
                 self.proc = None
+
+    def _note(self, base, direction, key):
+        """只有音符 / CC64 进轻量缓冲；钢琴面板靠它低延迟刷新"""
+        kind = base["kind"]
+        if kind not in ("note_on", "note_off", "cc"):
+            return
+        self.nn += 1
+        self.notes.append({"nn": self.nn, "t": base["t"], "key": key,
+                           "dir": direction, "kind": kind,
+                           "d1": base["d1"], "d2": base["d2"]})
+        if len(self.notes) > 4000:
+            del self.notes[:len(self.notes) - 4000]
 
     # ---- 查询
     def since(self, since, since_note=0):
@@ -697,6 +715,10 @@ class Observer:
             return ([e for e in self.events if e["n"] > since], self.n,
                     list(self.devices), dict(self.counters), self.proc is not None,
                     [x for x in self.notices if x["n"] > since_note], self.note_n)
+
+    def since_notes(self, since):
+        with self.lock:
+            return ([x for x in self.notes if x["nn"] > since], self.nn)
 
 
 OBSERVER = Observer()
@@ -760,6 +782,14 @@ class Handler(BaseHTTPRequestHandler):
             if not port:
                 return self._err("需要 port")
             return self._ok(MONITOR.poll(port, since))
+        if path == "/api/notes":
+            if not self._auth():
+                return self._err("需要 token", 401)
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            since = int((q.get("since") or ["0"])[0] or 0)
+            evs, last = OBSERVER.since_notes(since)
+            return self._ok({"events": evs, "last": last})
         if path == "/api/observe":
             if not self._auth():
                 return self._err("需要 token", 401)
