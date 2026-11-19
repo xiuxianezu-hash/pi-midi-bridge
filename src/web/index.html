@@ -41,6 +41,29 @@ label.mini{color:var(--sub);font-size:12px}
 .dchip small{color:var(--sub);margin-left:4px}
 .dchip b{font-weight:600}
 
+/* 88 键钢琴 */
+#pianowrap{margin:10px 14px 0;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+#pianowrap h2{margin:0;padding:7px 11px;font-size:12.5px;font-weight:600;border-bottom:1px solid var(--line);
+  background:#fbfcfd;display:flex;justify-content:space-between;align-items:center;gap:10px}
+#pianowrap h2 .lg{font-weight:400;font-size:11.5px;color:var(--sub);display:flex;gap:10px;align-items:center}
+.lg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:3px;vertical-align:-1px}
+.lg .i-in{background:var(--in)} .lg .i-out{background:var(--out)} .lg .i-both{background:linear-gradient(90deg,var(--in),var(--out))}
+#pianoscroll{overflow-x:auto;padding:9px 11px 11px}
+#piano{position:relative;height:96px;min-width:780px;user-select:none}
+#piano .wk{position:absolute;top:0;bottom:0;background:#fff;border:1px solid #d7dbe0;border-radius:0 0 4px 4px;
+  box-shadow:inset 0 -3px 0 #eceff3}
+#piano .wk.on-in{background:linear-gradient(180deg,#dbeafe,#2b6cb0)}
+#piano .wk.on-out{background:linear-gradient(180deg,#d6f0e4,#1f7a5a)}
+#piano .wk.on-in.on-out{background:linear-gradient(180deg,#e6e0f7,#6b46c1)}
+#piano .bk{position:absolute;top:0;height:58%;background:#3a4149;border:1px solid #22282e;border-radius:0 0 3px 3px;
+  z-index:2;box-shadow:inset 0 -2px 0 #232a30}
+#piano .bk.on-in{background:linear-gradient(180deg,#2b6cb0,#1e4b7a)}
+#piano .bk.on-out{background:linear-gradient(180deg,#1f7a5a,#14553d)}
+#piano .bk.on-in.on-out{background:linear-gradient(180deg,#6b46c1,#43308a)}
+#piano .lab{position:absolute;bottom:3px;left:0;right:0;text-align:center;font-size:9.5px;color:#8b939b;
+  font-family:ui-monospace,Menlo,Consolas,monospace;pointer-events:none}
+#pianostats{font-size:11.5px;color:var(--sub);min-height:16px}
+
 .panes{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px 14px 0}
 @media(max-width:1000px){.panes{grid-template-columns:1fr}}
 .pane{background:#fff;border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
@@ -92,6 +115,19 @@ footer{padding:0 14px 20px;color:var(--sub);font-size:11.5px}
 
 <div id="devstrip"></div>
 
+<div id="pianowrap">
+  <h2>
+    <span>88 键钢琴 · 实时弹奏（A0–C8）</span>
+    <span class="lg">
+      <span><i class="i-in"></i>输入/收到</span>
+      <span><i class="i-out"></i>输出/发出</span>
+      <span><i class="i-both"></i>同时</span>
+      <span id="pianostats"></span>
+    </span>
+  </h2>
+  <div id="pianoscroll"><div id="piano"></div></div>
+</div>
+
 <div class="panes">
   <section class="pane in">
     <h2><span class="t"><span class="dot"></span>输入 INPUT（收到）</span><span class="n" id="cnt-in"></span></h2>
@@ -126,6 +162,84 @@ const MAXROWS=600;
 
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 function tm(t){const d=new Date(t*1000);return d.toLocaleTimeString("zh-CN",{hour12:false})+"."+String(d.getMilliseconds()).padStart(3,"0");}
+
+/* ---- 88 键钢琴 ---- */
+const P_FIRST=21, P_LAST=108, BLACK_PC=[1,3,6,8,10], PCNM=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const KEYS=new Map(), ACTIVE=new Map(), HOLD={};
+const WHITE_W=100/52;
+let pianoTotalWhite=0;
+
+function buildPiano(){
+  const whites=[], blacks=[];
+  let wi=0;
+  for(let m=P_FIRST;m<=P_LAST;m++){
+    const pc=m%12, black=BLACK_PC.includes(pc);
+    if(!black){ whites.push({m,wi,pc}); wi++; }
+    else blacks.push({m,wi,pc});
+  }
+  pianoTotalWhite=wi;
+  const wh=[], bh=[];
+  whites.forEach(k=>{
+    const oct=Math.floor(k.m/12)-1;
+    wh.push(`<div class="wk" data-m="${k.m}" style="left:${(k.wi*WHITE_W).toFixed(3)}%;width:${WHITE_W.toFixed(3)}%">
+      ${k.pc===0?`<span class="lab">C${oct}</span>`:""}</div>`);
+  });
+  blacks.forEach(k=>{
+    const bw=WHITE_W*0.62;
+    bh.push(`<div class="bk" data-m="${k.m}" style="left:${(k.wi*WHITE_W-bw/2).toFixed(3)}%;width:${bw.toFixed(3)}%"></div>`);
+  });
+  const el=document.getElementById("piano");
+  el.innerHTML=wh.join("")+bh.join("");
+  el.style.height=el.style.height||"96px";
+  document.querySelectorAll("#piano [data-m]").forEach(n=>KEYS.set(+n.dataset.m,n));
+}
+
+function midiName(m){return PCNM[m%12]+(Math.floor(m/12)-1);}
+
+function paintKey(m){
+  const el=KEYS.get(m); if(!el) return;
+  const a=ACTIVE.get(m)||{};
+  el.classList.toggle("on-in",!!a.in);
+  el.classList.toggle("on-out",!!a.out);
+  const names=[];
+  ACTIVE.forEach((v,k)=>{ if(v.in||v.out) names.push(midiName(k)); });
+  const s=document.getElementById("pianostats");
+  if(s) s.textContent=names.length?`按下的键：${names.join(" ")}`:"";
+}
+
+function press(m,dir){
+  if(!KEYS.has(m)) return;
+  let a=ACTIVE.get(m); if(!a){a={in:0,out:0};ACTIVE.set(m,a);}
+  a[dir]=(a[dir]||0)+1;
+  paintKey(m);
+  const hk=m+":"+dir;
+  clearTimeout(HOLD[hk]);
+  HOLD[hk]=setTimeout(()=>{ const b=ACTIVE.get(m); if(b&&b[dir]>0){b[dir]=0;paintKey(m);} },4000);
+}
+
+function release(m,dir){
+  const a=ACTIVE.get(m); if(!a) return;
+  const hk=m+":"+dir;
+  clearTimeout(HOLD[hk]);
+  HOLD[hk]=setTimeout(()=>{
+    const b=ACTIVE.get(m); if(!b) return;
+    b[dir]=Math.max(0,(b[dir]||0)-1);
+    paintKey(m);
+  },180);
+}
+
+function pianoFeed(events){
+  events.forEach(e=>{
+    if(S.dev && e.key!==S.dev) return;
+    if(e.kind!=="note_on" && e.kind!=="note_off") return;
+    const m=Number(e.d1);
+    if(!Number.isFinite(m)||!KEYS.has(m)) return;
+    const on=(e.kind==="note_on" && Number(e.d2||0)>0);
+    const dir=e.dir==="in"?"in":"out";
+    on?press(m,dir):release(m,dir);
+  });
+}
+buildPiano();
 
 function chips(d){
   const br=d.bridge||{}, ble=d.ble||{}, rtp=(d.rtp&&d.rtp.peers)||[];
@@ -214,6 +328,7 @@ async function poll(){
     const d=await r.json();
     S.counters=d.counters||{};
     chips(d); renderDevStrip(d); calcRate(d);
+    pianoFeed(d.events||[]);
     if(!S.paused){
       (d.events||[]).forEach(e=>{
         const arr=e.dir==="in"?S.inRows:S.outRows;
@@ -248,7 +363,12 @@ document.getElementById("pause").onclick=e=>{
   e.target.style.color=S.paused?"#fff":"inherit";
   e.target.textContent=S.paused?"继续":"暂停";
 };
-document.getElementById("clear").onclick=()=>{S.inRows=[];S.outRows=[];S.notices=[];renderAll();};
+document.getElementById("clear").onclick=()=>{
+  S.inRows=[];S.outRows=[];S.notices=[];renderAll();
+  ACTIVE.clear();Object.keys(HOLD).forEach(k=>{clearTimeout(HOLD[k]);delete HOLD[k];});
+  KEYS.forEach((el,m)=>paintKey(m));
+  document.getElementById("pianostats").textContent="";
+};
 (function(){
   let h=`<option value="">全部通道</option>`;
   for(let i=0;i<16;i++) h+=`<option value="${i}">Ch ${i+1}</option>`;
