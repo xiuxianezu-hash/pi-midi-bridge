@@ -166,7 +166,7 @@ function tm(t){const d=new Date(t*1000);return d.toLocaleTimeString("zh-CN",{hou
 
 /* ---- 88 键钢琴（布尔状态机 + 延音踏板）---- */
 const P_FIRST=21, P_LAST=108, BLACK_PC=[1,3,6,8,10], PCNM=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const KEYS=new Map(), ACTIVE=new Map(), WATCH=new Map(), SUSTAINED=new Set();
+const KEYS=new Map(), ACTIVE=new Map(), WATCH=new Map();
 const WHITE_W=100/52;
 let sustainOn=false, statPending=false, SUS_T=null;
 
@@ -196,7 +196,7 @@ function stateAll(){ // 标题只做节流刷新，真正的键位绘制由 pain
   if(statPending) return; statPending=true;
   setTimeout(()=>{
     statPending=false;
-    const n2=[]; ACTIVE.forEach((v,k)=>{ if(v.in||v.out) n2.push(k); });
+    const n2=[]; ACTIVE.forEach((v,k)=>{ if(v.in>0||v.out>0) n2.push(k); });
     const s=document.getElementById("pianostats");
     const ped=sustainOn?"  · 踏板 CC64 踩下（仅作状态提示，不挂住琴键）":"";
     if(s) s.textContent=(n2.length?`按下的键（${n2.length}）：`+n2.map(midiName).join(" "):"无按键")+ped;
@@ -212,14 +212,14 @@ function paint(m){
 
 function keyOn(m,dir){
   if(!KEYS.has(m)) return;
-  let a=ACTIVE.get(m); if(!a){a={in:false,out:false};ACTIVE.set(m,a);}
-  a[dir]=true; paint(m); stateAll();
+  let a=ACTIVE.get(m); if(!a){a={in:0,out:0};ACTIVE.set(m,a);}
+  a[dir]=(a[dir]||0)+1; paint(m); stateAll();   // 计数式：同一键未松开又按下时不提前熄灭
   clearTimeout(WATCH.get(m));
   WATCH.set(m,setTimeout(()=>{  // 5s 兜底释键：防丢 off。注意两个方向一起清，
                                  // 否则 in/out 各挂一个定时器时，后建的只会清自己那一向，另一向永久常亮
     WATCH.delete(m);
     const b=ACTIVE.get(m); if(!b) return;
-    b.in=false; b.out=false; ACTIVE.delete(m);
+    b.in=0; b.out=0; ACTIVE.delete(m);
     paint(m); stateAll();
   },5000));
 }
@@ -227,7 +227,7 @@ function keyOn(m,dir){
 function keyOff(m,dir){
   const a=ACTIVE.get(m); if(!a) return;
   clearTimeout(WATCH.get(m)); WATCH.delete(m);
-  a[dir]=false; if(!a.in&&!a.out) ACTIVE.delete(m);
+  a[dir]=Math.max(0,(a[dir]||0)-1); if(a.in<=0&&a.out<=0) ACTIVE.delete(m);
   paint(m); stateAll();
 }
 
