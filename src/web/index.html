@@ -124,14 +124,23 @@ svg{display:block}
     </div>
 
     <div class="panel" id="p-v">
-      <h2>MIDI 监视器 — 实时看某端口进出的消息</h2>
+      <h2>MIDI 监视器 — 解析后按设备 / 方向 / 通道 / 类型过滤</h2>
       <div class="form" style="grid-template-columns:1fr auto auto">
         <select id="mon-port"></select>
         <button class="pri" id="mon-start">开始</button>
         <button id="mon-stop">停止</button>
       </div>
-      <div id="mon"></div>
-      <div class="hint">监视器会常驻一个 aseqdump 进程；不看了点「停止」释放。</div>
+      <div class="form" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:8px">
+        <select id="m-dev"><option value="">设备：全部</option></select>
+        <select id="m-dir"><option value="">方向：全部</option><option value="OUT">输出 OUT</option><option value="IN">输入 IN</option></select>
+        <select id="m-kind"><option value="">类型：全部</option><option value="note">音符 Note</option><option value="cc">控制器 CC</option><option value="pc">音色 Program</option><option value="pb">弯音 Pitch</option><option value="sysex">SysEx</option><option value="clock">时钟 Clock</option><option value="after">触后</option><option value="realtime">实时</option><option value="other">其它</option></select>
+        <select id="m-ch"><option value="">通道：全部</option></select>
+      </div>
+      <table style="margin-top:10px"><thead><tr>
+        <th style="width:78px">时间</th><th style="width:44px">方向</th><th>端口</th><th>设备</th>
+        <th style="width:40px">Ch</th><th>事件</th><th>数据</th><th style="width:64px">音符</th>
+      </tr></thead><tbody id="mon-rows"></tbody></table>
+      <div class="hint">方向说明：OUT = 该端口自己发出；IN = 该端口从上游收到（按当前路由推导）。累计 <span id="mon-count">0</span> 条，只保留最近 300 行。</div>
     </div>
   </div>
 </main>
@@ -153,7 +162,7 @@ async function refresh(){
   try{ STATE = await api('/api/state') }catch(e){ document.getElementById('tick').textContent='连接失败'; return }
   document.getElementById('ver').textContent='v'+STATE.version;
   document.getElementById('tick').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});
-  renderBle(); renderRtp(); fillSelects(); renderTable(); renderPresets(); renderRestore(); renderGraph();
+  renderBle(); renderRtp(); fillSelects(); fillDevFilter(); renderTable(); renderPresets(); renderRestore(); renderGraph(); if(MBUF.length) renderMon();
 }
 
 function renderBle(){
@@ -286,25 +295,66 @@ async function delPreset(name){
 }
 
 /* ---------- 监视器 ---------- */
+let MBUF=[];
+function clientName(id){const c=(STATE.alsa||[]).find(x=>String(x.id)===String(id));return c?c.name:(id+'?')}
+function expandRow(m){
+  const rows=[]; const src=m.src||''; const sid=src.split(':')[0];
+  rows.push(Object.assign({},m,{dir:'OUT',port:src,client:clientName(sid),from:null}));
+  (STATE.links||[]).forEach(([a,b])=>{
+    if(a===src && b!==src){ rows.push(Object.assign({},m,{dir:'IN',port:b,client:clientName(b.split(':')[0]),from:src})); }
+  });
+  return rows;
+}
+function matchRow(r){
+  const dv=document.getElementById('m-dev').value, dd=document.getElementById('m-dir').value;
+  const dk=document.getElementById('m-kind').value, dc=document.getElementById('m-ch').value;
+  if(dv && r.client!==dv) return false;
+  if(dd && r.dir!==dd) return false;
+  if(dk){
+    if(dk==='note'){ if(r.kind!=='note_on'&&r.kind!=='note_off') return false }
+    else if(dk!==r.kind) return false;
+  }
+  if(dc!=='' && String(r.chan)!==dc) return false;
+  return true;
+}
+function renderMon(){
+  const rows=MBUF.filter(matchRow).slice(-300);
+  document.getElementById('mon-count').textContent=MBUF.length;
+  document.getElementById('mon-rows').innerHTML=rows.map(r=>{
+    const t=new Date(r.t*1000).toLocaleTimeString('zh-CN',{hour12:false});
+    const cls=r.dir==='IN'?'ok':'';
+    const ev=r.event||'';
+    const data=r.text||'';
+    return '<tr title="'+escapeHtml(r.raw||'')+'"><td class="mono">'+t+'</td>'+
+      '<td><span class="pill '+cls+'">'+r.dir+'</span></td>'+
+      '<td class="mono">'+r.port+'</td><td>'+escapeHtml(r.client||'')+'</td>'+
+      '<td class="mono">'+(r.chan==null?'-':r.chan)+'</td>'+
+      '<td>'+escapeHtml(ev)+'</td><td class="mono">'+escapeHtml(data)+'</td>'+
+      '<td class="mono">'+(r.note||'')+'</td></tr>';
+  }).join('')||'<tr><td class="mono" colspan="8">暂无匹配消息</td></tr>';
+}
+function fillDevFilter(){
+  const sel=document.getElementById('m-dev'), v=sel.value;
+  const names=[...new Set((STATE.alsa||[]).filter(c=>c.id!==0).map(c=>c.name))];
+  sel.innerHTML='<option value="">设备：全部</option>'+names.map(n=>'<option>'+escapeHtml(n)+'</option>').join('');
+  if(v)sel.value=v;
+  const ch=document.getElementById('m-ch'), cv=ch.value;
+  ch.innerHTML='<option value="">通道：全部</option>'+Array.from({length:16},(_,i)=>'<option value="'+i+'">CH '+(i+1)+'</option>').join('');
+  if(cv)ch.value=cv;
+}
 async function monStart(){
   const port=document.getElementById('mon-port').value;
   const r=await post('/api/monitor',{op:'start',port});
   toast(r.ok?('开始监视 '+port):'启动失败');
-  MSINCE=0; document.getElementById('mon').innerHTML='';
+  MSINCE=0; MBUF=[]; renderMon();
   clearInterval(MTIMER);
   MTIMER=setInterval(async()=>{
     const d=await api('/api/monitor?port='+encodeURIComponent(port)+'&since='+MSINCE);
     if(!d.msgs||!d.msgs.length)return;
     MSINCE=d.last;
-    const mon=document.getElementById('mon');
-    d.msgs.forEach(m=>{
-      const line=document.createElement('div');
-      const t=new Date(m.t*1000).toLocaleTimeString('zh-CN',{hour12:false});
-      line.textContent=t+'  '+wrap(m.text);
-      mon.appendChild(line);
-    });
-    while(mon.childElementCount>300) mon.removeChild(mon.firstChild);
-    mon.scrollTop=mon.scrollHeight;
+    d.msgs.forEach(m=>{ MBUF.push(...expandRow(m)) });
+    if(MBUF.length>800) MBUF=MBUF.slice(-800);
+    renderMon();
   },900);
 }
 async function monStop(){
@@ -341,6 +391,7 @@ document.getElementById('auto-on').onchange=async e=>{
   await post('/api/autorestore',{enabled:e.target.checked, snapshot:true});
   toast(e.target.checked?'已开启开机恢复':'已关闭开机恢复'); refresh();
 };
+['m-dev','m-dir','m-kind','m-ch'].forEach(id=>document.getElementById(id).onchange=renderMon);
 document.getElementById('mon-start').onclick=monStart;
 document.getElementById('mon-stop').onclick=monStop;
 

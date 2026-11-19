@@ -25,7 +25,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 WEBROOT = os.environ.get("WEBROOT", "/usr/share/pi-midi-bridge/web")
 BIND = os.environ.get("WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
@@ -178,6 +178,82 @@ def ble_state():
 
 
 # ---------------------------------------------------------------- MIDI 监视器
+PORT_LINE = re.compile(r"^\s*(\d+):(\d+)\s+(.+)$")
+TAIL_NUM = re.compile(r"^(\d+),\s*(.+)$")
+NOTE_NUM = re.compile(r"note\s+(\d{1,3})")
+CC_NUM = re.compile(r"controller\s+(\d{1,3}).*?value\s+(-?\d{1,4})")
+VEL_NUM = re.compile(r"velocity\s+(-?\d{1,4})")
+PROG_NUM = re.compile(r"program\s+(\d{1,3})")
+PB_NUM = re.compile(r"value\s+(-?\d{1,5})")
+SYSEX_RE = re.compile(r"^([0-9A-Fa-f ]{2,})$")
+
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def note_name(num):
+    return f"{NOTE_NAMES[num % 12]}{num // 12 - 1}"
+
+
+def parse_event(text):
+    """把 aseqdump 一行拆成结构化字段"""
+    m = PORT_LINE.match(text)
+    if not m:
+        return {"src": None, "event": text, "chan": None, "d1": None, "d2": None,
+                "note": None, "text": text}
+    src = f"{m.group(1)}:{m.group(2)}"
+    body = m.group(3).strip()
+    parts = re.split(r"\s{2,}", body, maxsplit=1)
+    event = parts[0].strip()
+    tail = parts[1].strip() if len(parts) > 1 else ""
+    chan, d1, d2, note = None, None, None, None
+    if tm := TAIL_NUM.match(tail):
+        chan = int(tm.group(1))
+        tail = tm.group(2)
+    low = event.lower()
+    if "note on" in low or "note off" in low:
+        if nm := NOTE_NUM.search(tail):
+            d1 = int(nm.group(1))
+            note = note_name(d1)
+        if vm := VEL_NUM.search(tail):
+            d2 = int(vm.group(1))
+    elif "control change" in low or "control" in low and "value" in low:
+        if cm := CC_NUM.search(tail):
+            d1, d2 = int(cm.group(1)), int(cm.group(2))
+    elif "program" in low:
+        if pm := PROG_NUM.search(tail):
+            d1 = int(pm.group(1))
+    elif "pitch" in low:
+        if bm := PB_NUM.search(tail):
+            d1 = int(bm.group(1))
+            note = None
+    elif "exclusive" in low:
+        d1 = None
+    return {"src": src, "event": event, "chan": chan, "d1": d1, "d2": d2,
+            "note": note, "text": tail or event,
+            "kind": event_kind(event)}
+
+
+def event_kind(event):
+    low = event.lower()
+    if "note on" in low:
+        return "note_on"
+    if "note off" in low:
+        return "note_off"
+    if "control" in low:
+        return "cc"
+    if "program" in low:
+        return "pc"
+    if "pitch" in low:
+        return "pb"
+    if "exclusive" in low or "sysex" in low:
+        return "sysex"
+    if "clock" in low:
+        return "clock"
+    if "channel pressure" in low or "aftertouch" in low or "poly" in low:
+        return "after"
+    if "sensing" in low or "active" in low or "reset" in low or "start" in low or "stop" in low:
+        return "realtime"
+    return "other"
 class Monitor:
     """对某端口跑 aseqdump，最近消息放环形缓冲里供网页轮询"""
 
@@ -199,7 +275,11 @@ class Monitor:
                 with self.lock:
                     buf = self.buffers.setdefault(port, [])
                     self.seq[port] = self.seq.get(port, 0) + 1
-                    buf.append({"n": self.seq[port], "t": round(time.time(), 3), "text": line})
+                    rec = parse_event(line)
+                    rec["n"] = self.seq[port]
+                    rec["t"] = round(time.time(), 3)
+                    rec["raw"] = line
+                    buf.append(rec)
                     if len(buf) > self.MAX:
                         del buf[:len(buf) - self.MAX]
         finally:
