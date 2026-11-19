@@ -28,7 +28,7 @@ from bumble.transport import open_transport
 SVC = "03b80e5a-ede8-4b33-a751-6ce34ec4c700"
 CHR = "7772e5db-3868-4112-a1a9-f2669d106bf3"
 ADDRESS = "B8:27:EB:A9:C3:C4"
-VIRMIDI = os.environ.get("VIRMIDI", "/dev/snd/midiC2D0")
+VIRMIDI = os.environ.get("VIRMIDI", "")  # 空=自动识别
 DEBUG = os.environ.get("DEBUG", "0") == "1"
 
 # 体检计数器：任何"静默跳过/失败"都要能看见，避免再次无声丢音
@@ -42,6 +42,34 @@ STATS = {
     "err_write": 0,
     "fail_notify": 0,
 }
+
+
+def find_virmidi():
+    """按名字找 VirMIDI 的裸设备节点：ALSA 卡序号会漂移（实测 card2 → card1），不能写死"""
+    env = os.environ.get("VIRMIDI", "").strip()
+    if env and os.path.exists(env):
+        return env
+    try:
+        with open("/proc/asound/cards") as f:
+            txt = f.read()
+        for line in txt.splitlines():
+            m = re.match(r"\s*(\d+)\s+\[\s*VirMIDI", line)
+            if m:
+                cand = f"/dev/snd/midiC{m.group(1)}D0"
+                if os.path.exists(cand):
+                    return cand
+    except Exception:
+        pass
+    for i in range(8):
+        cand = f"/dev/snd/midiC{i}D0"
+        if os.path.exists(cand):
+            try:
+                with open(f"/proc/asound/card{i}/id") as f:
+                    if "VirMIDI" in f.read():
+                        return cand
+            except Exception:
+                continue
+    return env or "/dev/snd/midiC2D0"
 
 
 def find_le_adapter() -> str:
@@ -187,8 +215,9 @@ class Bridge:
         self.raw_state = {"status": None, "carry": b"", "drop_nostatus": 0}
 
     def open_virmidi(self):
-        self.fd = os.open(VIRMIDI, os.O_RDWR | os.O_NONBLOCK)
-        print(f"[ALSA] 已打开虚拟 MIDI 口 {VIRMIDI}", flush=True)
+        path = find_virmidi()
+        self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        print(f"[ALSA] 已打开虚拟 MIDI 口 {path}", flush=True)
 
     async def ble_write(self, connection, value):
         global _value
@@ -409,7 +438,7 @@ async def main():
             """SIGHUP：热重载。只重开 ALSA 口 + 补广播，不断 BLE 链路。"""
             try:
                 old = bridge.fd
-                bridge.fd = os.open(VIRMIDI, os.O_RDWR | os.O_NONBLOCK)
+                bridge.fd = os.open(find_virmidi(), os.O_RDWR | os.O_NONBLOCK)
                 if old is not None:
                     try:
                         os.close(old)

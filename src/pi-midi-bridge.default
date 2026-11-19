@@ -4,8 +4,10 @@
 HCI_ADDR=B8:27:EB:A9:C3:C4
 
 # 桥使用的 ALSA 虚拟 MIDI 口（snd-virmidi 提供）
-VIRMIDI=/dev/snd/midiC2D0
-VIRMIDI_PORT=24:0
+# 留空 = 自动识别 VirMIDI 设备节点（卡序号会漂移）
+VIRMIDI=
+# auto = 自动按名字找 virmidi 的 ALSA client 号
+VIRMIDI_PORT=auto
 
 # 1=打开 BLE 增强 ATT（macOS 上会挂，默认关闭）
 EATT=0

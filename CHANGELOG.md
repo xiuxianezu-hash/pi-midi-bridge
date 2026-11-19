@@ -1,5 +1,12 @@
 # 更新记录
 
+## 1.6.1 — 2026-11-19
+
+- 修：ALSA 卡序号漂移导致桥启动即崩（实测重装后 VirMIDI 从 `card2` 变成 `card1`，写死的 `/dev/snd/midiC2D0` 打不开 → 服务 `activating` → 蓝牙不再广播、`Pi-MIDI` 消失）
+- `find_virmidi()` 按 `/proc/asound/cards` 里的 `VirMIDI` 名字自动定位 `/dev/snd/midiC<N>D0`，`VIRMIDI` 留空即自动
+- `wire_alsa.sh` / `rewire_virmidi.sh` 用 `aconnect -l` 按 `Virtual Raw MIDI` 名字解析 client 号，`VIRMIDI_PORT=auto` 为默认
+- `hw_init.sh` 启动前最多等 10 秒，确保虚拟口真的出现后再拉起桥
+
 ## 1.6.0 — 2026-11-19
 
 - 连线改回**表格驱动**：一行一条线，源端口/目的端口都用下拉框选（按设备分组），改完点「应用」一次性下发

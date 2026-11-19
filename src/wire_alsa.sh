@@ -1,7 +1,17 @@
 #!/bin/sh
 # 把 virmidi 口和 rtpmidid 的端口接上
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
-VIRMIDI_PORT="${VIRMIDI_PORT:-24:0}"
+VIRMIDI_PORT="${VIRMIDI_PORT:-auto}"
+need_resolve() {
+  [ -z "$1" ] && return 0
+  [ "$1" = "auto" ] && return 0
+  aconnect -l | grep -q "^client ${1%%:*}: " || return 0
+  return 1
+}
+if need_resolve "$VIRMIDI_PORT"; then
+  VIRMIDI_PORT=$(aconnect -l | sed -n 's/^client \([0-9]\+\).: .Virtual Raw MIDI.*/\1:0/p' | head -1)
+  [ -n "$VIRMIDI_PORT" ] || VIRMIDI_PORT=24:0
+fi
 sleep 1
 
 aconnect "$VIRMIDI_PORT" 128:0 2>/dev/null || true
