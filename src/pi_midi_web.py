@@ -25,7 +25,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 WEBROOT = os.environ.get("WEBROOT", "/usr/share/pi-midi-bridge/web")
 BIND = os.environ.get("WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
@@ -33,6 +33,7 @@ TOKEN = os.environ.get("WEB_TOKEN", "")
 LOG = os.environ.get("BRIDGE_LOG", "/var/log/pi-midi-bridge.log")
 RTPD_INI = os.environ.get("RTPMIDID_INI", "/etc/rtpmidid/default.ini")
 PRESET_FILE = os.environ.get("PRESET_FILE", "/var/lib/pi-midi-bridge/presets.json")
+STATE_FILE = os.environ.get("STATE_FILE", "/var/lib/pi-midi-bridge/state.json")
 
 
 # ---------------------------------------------------------------- rtpmidid RPC
@@ -110,6 +111,43 @@ def alsa_links():
     return out
 
 
+def all_ports_list():
+    """非 System 的所有端口，形如 ['24:0','25:0','128:1']"""
+    out = []
+    for c in alsa_state():
+        # System / MIDI Through 这类 kernel 端口无法被订阅，拉进来会让 aseqdump 直接退出
+        if c["id"] == 0 or "Through" in c["name"] or "PipeWire" in c["name"]:
+            continue
+        for p in c["ports"]:
+            out.append(f"{c['id']}:{p['id']}")
+    return out
+
+
+def load_state():
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(st):
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(st, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, STATE_FILE)
+
+
+def record_links():
+    """把当前非 System 连线记进状态文件，供重启后恢复"""
+    st = load_state()
+    st["links"] = [[a, b] for a, b in alsa_links() if not (a.startswith("0:") or b.startswith("0:"))]
+    st["saved"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    save_state(st)
+    return st
+
+
 # ---------------------------------------------------------------- 蓝牙状态
 LINK_RE_BLE = re.compile(r"\[链路\]\s*(.*)")
 
@@ -168,25 +206,45 @@ class Monitor:
             with self.lock:
                 self.procs.pop(port, None)
 
-    def start(self, port):
+    def start(self, spec):
         with self.lock:
-            if port in self.procs and self.procs[port].poll() is None:
+            if spec in self.procs and self.procs[spec].poll() is None:
                 return True
-            self.buffers.setdefault(port, [])
+            if spec == "all":
+                cand = all_ports_list()
+                for _ in range(8):
+                    if not cand:
+                        return False
+                    target = ",".join(cand)
+                    try:
+                        r = subprocess.run(["aseqdump", "-p", target],
+                                           capture_output=True, text=True, timeout=0.6)
+                    except subprocess.TimeoutExpired:
+                        break                      # 还活着 = 这批端口可用
+                    m = re.search(r"Cannot connect from port (\d+:\d+)", (r.stdout + r.stderr))
+                    if not m:
+                        break                      # 其它错误，交给正式启动去暴露
+                    cand.remove(m.group(1))
+            else:
+                target = spec
+            if not target:
+                return False
+            self.buffers.setdefault(spec, [])
+            self.seq.setdefault(spec, 0)
             try:
-                p = subprocess.Popen(["aseqdump", "-p", port], stdout=subprocess.PIPE,
+                p = subprocess.Popen(["aseqdump", "-p", target], stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, text=True, bufsize=1)
             except Exception:                     # noqa: BLE001
                 return False
-            self.procs[port] = p
-        threading.Thread(target=self._run, args=(port, p), daemon=True).start()
+            self.procs[spec] = p
+        threading.Thread(target=self._run, args=(spec, p), daemon=True).start()
         return True
 
-    def stop(self, port):
+    def stop(self, spec):
         with self.lock:
-            p = self.procs.pop(port, None)
-            self.buffers.pop(port, None)
-            self.seq.pop(port, None)
+            p = self.procs.pop(spec, None)
+            self.buffers.pop(spec, None)
+            self.seq.pop(spec, None)
         if p:
             p.terminate()
 
@@ -231,6 +289,7 @@ def apply_links(pairs, clear_first=True):
             done += 1
         else:
             failed.append({"pair": [src, dst], "msg": (p.stdout + p.stderr).strip()})
+    record_links()
     return done, failed
 
 
@@ -277,6 +336,7 @@ class Handler(BaseHTTPRequestHandler):
                 "alsa": alsa_state(),
                 "links": alsa_links(),
                 "presets": load_presets(),
+                "restore": {k: load_state().get(k) for k in ("auto", "links", "saved")},
                 "rtp": (rtp_rpc("status").get("result") or {}),
             })
         if path == "/api/monitor":
@@ -324,14 +384,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._rtp(data)
         if path == "/api/monitor":
             port = (data.get("port") or "").strip()
-            if not port or ":" not in port:
-                return self._err("port 需形如 24:0")
+            if not port or (port != "all" and ":" not in port):
+                return self._err("port 需形如 24:0 或 all")
             if data.get("op") == "stop":
                 MONITOR.stop(port)
                 return self._ok({"ok": True, "running": False})
             return self._ok({"ok": MONITOR.start(port), "port": port})
         if path == "/api/presets":
             return self._presets(data)
+        if path == "/api/autorestore":
+            st = load_state()
+            if "enabled" in data:
+                st["auto"] = bool(data["enabled"])
+            if data.get("snapshot"):
+                record_links()
+            save_state(st)
+            st = load_state()
+            return self._ok({"ok": True, "auto": st.get("auto", False),
+                             "links": st.get("links", []), "saved": st.get("saved")})
         if path == "/api/service":
             try:
                 p = subprocess.run(["systemctl", data.get("op", "reload"), "pi-midi-bridge"],
@@ -354,6 +424,7 @@ class Handler(BaseHTTPRequestHandler):
         out = (p.stdout + p.stderr).strip()
         if op == "link" and data.get("both"):
             subprocess.run(["aconnect", dst, src], capture_output=True, text=True)
+        record_links()
         return self._ok({"ok": True,
                          "out": out or ("已连接" if op == "link" else "已断开")})
 
@@ -402,8 +473,18 @@ class Handler(BaseHTTPRequestHandler):
         return self._err("op 只能是 save / apply / delete")
 
 
+def restore_on_boot():
+    st = load_state()
+    if not st.get("auto") or not st.get("links"):
+        return
+    time.sleep(4)                      # 等 rtpmidid / 桥接把端口建齐
+    done, failed = apply_links(st["links"], clear_first=True)
+    print(f"[web] 开机恢复上次路由：成功 {done} 条，失败 {len(failed)} 条", flush=True)
+
+
 def main():
     os.makedirs(os.path.dirname(PRESET_FILE), exist_ok=True)
+    threading.Thread(target=restore_on_boot, daemon=True).start()
     print(f"[web] pi-midi-web {VERSION} 监听 {BIND}:{PORT} token={'有' if TOKEN else '无'}",
           flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()

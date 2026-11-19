@@ -82,7 +82,14 @@ svg{display:block}
   <div class="card">
     <div class="panel on" id="p-g">
       <h2>连线图 — 点两个端口即连接，点连线即断开</h2>
-      <div id="graph"></div>
+      <div class="form" style="grid-template-columns:auto 1fr auto auto">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b94a3">
+          <input type="checkbox" id="both" style="width:auto"> 双向连接</label>
+        <span></span>
+        <button id="clearlinks">清空非 System 连线</button>
+        <button id="grefresh">刷新</button>
+      </div>
+      <div id="graph" style="margin-top:10px"></div>
       <div class="legend" id="ghint">已选源：无</div>
     </div>
 
@@ -106,6 +113,14 @@ svg{display:block}
       </div>
       <table style="margin-top:12px"><thead><tr><th>预设</th><th>连线数</th><th>保存时间</th><th></th></tr></thead><tbody id="preset-rows"></tbody></table>
       <div class="hint">「应用」会先清掉现有的非 System 连接，再按预设重建，避免叠加出环。</div>
+      <h2 style="margin-top:18px">开机自动恢复</h2>
+      <div class="form" style="grid-template-columns:auto 1fr auto">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b94a3">
+          <input type="checkbox" id="auto-on" style="width:auto"> 开机后恢复上次连线</label>
+        <span class="mono" id="auto-info">-</span>
+        <button id="auto-snap">现在记录当前连线</button>
+      </div>
+      <div class="hint">开关打开后，树莓派重启（或 web 服务重启）会等 4 秒自动把上次的连线重建回来。</div>
     </div>
 
     <div class="panel" id="p-v">
@@ -138,7 +153,7 @@ async function refresh(){
   try{ STATE = await api('/api/state') }catch(e){ document.getElementById('tick').textContent='连接失败'; return }
   document.getElementById('ver').textContent='v'+STATE.version;
   document.getElementById('tick').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});
-  renderBle(); renderRtp(); fillSelects(); renderTable(); renderPresets(); renderGraph();
+  renderBle(); renderRtp(); fillSelects(); renderTable(); renderPresets(); renderRestore(); renderGraph();
 }
 
 function renderBle(){
@@ -174,10 +189,10 @@ function allPorts(){
   return out;
 }
 function fillSelects(){
-  const opts=allPorts().map(o=>'<option value="'+o.c.id+':'+o.p.id+'">'+portLabel(o.c,o.p)+'</option>').join('');
-  ['alsrc','aldst','mon-port'].forEach(id=>{
-    const el=document.getElementById(id), v=el.value; el.innerHTML=opts; if(v)el.value=v;
-  });
+  const popts=allPorts().map(o=>'<option value="'+o.c.id+':'+o.p.id+'">'+portLabel(o.c,o.p)+'</option>').join('');
+  const mopts='<option value="all">★ 全部端口（全局）</option>'+popts;
+  ['alsrc','aldst'].forEach(id=>{const el=document.getElementById(id),v=el.value;el.innerHTML=popts;if(v)el.value=v;});
+  const mo=document.getElementById('mon-port'), mv=mo.value; mo.innerHTML=mopts; if(mv)mo.value=mv;
 }
 
 function renderTable(){
@@ -189,6 +204,12 @@ function renderTable(){
   document.getElementById('al-links').innerHTML=rows||'<tr><td class="mono">还没有任何路由</td><td></td><td></td></tr>';
 }
 
+function renderRestore(){
+  const r=(STATE.restore||{});
+  const on=document.getElementById('auto-on'), info=document.getElementById('auto-info');
+  on.checked=!!r.auto;
+  info.textContent=(r.links?r.links.length:0)+' 条 · '+(r.saved||'未记录');
+}
 function renderPresets(){
   const ps=STATE.presets||{}, keys=Object.keys(ps);
   let rows='';
@@ -241,7 +262,7 @@ function escapeHtml(s){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','
 async function pickNode(key){
   if(!SEL){ SEL=key; renderGraph(); return }
   if(SEL===key){ SEL=null; renderGraph(); return }
-  const r=await post('/api/alsa',{op:'link',src:SEL,dst:key});
+  const r=await post('/api/alsa',{op:'link',src:SEL,dst:key,both:document.getElementById('both').checked});
   toast(r.ok?('已连接 '+SEL+' → '+key):('失败：'+(r.out||''))); SEL=null; refresh();
 }
 async function unlinkPair(s,d){
@@ -306,6 +327,19 @@ document.getElementById('alrefresh').onclick=refresh;
 document.getElementById('preset-save').onclick=async()=>{
   const name=document.getElementById('preset-name').value.trim(); if(!name)return toast('先起个名字');
   const r=await post('/api/presets',{op:'save',name}); toast(r.ok?'已保存':'失败：'+(r.error||'')); refresh();
+};
+document.getElementById('grefresh').onclick=()=>{SEL=null;refresh()};
+document.getElementById('clearlinks').onclick=async()=>{
+  if(!confirm('清空所有非 System 连线？'))return;
+  for(const [a,b] of (STATE.links||[])){ if(a.startsWith('0:')||b.startsWith('0:'))continue; await post('/api/alsa',{op:'unlink',src:a,dst:b}); }
+  toast('已清空'); refresh();
+};
+document.getElementById('auto-snap').onclick=async()=>{
+  const r=await post('/api/autorestore',{snapshot:true}); toast('已记录 '+(r.links||[]).length+' 条连线'); refresh();
+};
+document.getElementById('auto-on').onchange=async e=>{
+  await post('/api/autorestore',{enabled:e.target.checked, snapshot:true});
+  toast(e.target.checked?'已开启开机恢复':'已关闭开机恢复'); refresh();
 };
 document.getElementById('mon-start').onclick=monStart;
 document.getElementById('mon-stop').onclick=monStop;
