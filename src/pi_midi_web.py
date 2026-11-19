@@ -25,7 +25,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 WEBROOT = os.environ.get("WEBROOT", "/usr/share/pi-midi-bridge/web")
 BIND = os.environ.get("WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
@@ -356,11 +356,16 @@ def save_presets(p):
 
 
 def apply_links(pairs, clear_first=True):
+    # 只保留两端都还存在的连线，避免把已消失的对端（RTP peer 重建后端口号会变）当成目标
+    alive = {f"{c['id']}:{p['id']}" for c in alsa_state() if c["id"] != 0 for p in c["ports"]}
+    usable = [[a, b] for a, b in pairs if a in alive and b in alive]
+    skipped = len(pairs) - len(usable)
     if clear_first:
         for src, dst in alsa_links():
             if src.startswith("0:") or dst.startswith("0:"):   # System 端口不动
                 continue
             subprocess.run(["aconnect", "-d", src, dst], capture_output=True, text=True)
+    pairs = usable
     done, failed = 0, []
     for src, dst in pairs:
         p = subprocess.run(["aconnect", src, dst], capture_output=True, text=True)
@@ -370,6 +375,8 @@ def apply_links(pairs, clear_first=True):
         else:
             failed.append({"pair": [src, dst], "msg": (p.stdout + p.stderr).strip()})
     record_links()
+    if skipped:
+        print(f"[web] 跳过 {skipped} 条端口已不存在的连线", flush=True)
     return done, failed
 
 
@@ -557,8 +564,13 @@ def restore_on_boot():
     st = load_state()
     if not st.get("auto") or not st.get("links"):
         return
-    time.sleep(4)                      # 等 rtpmidid / 桥接把端口建齐
+    time.sleep(8)                      # 等 rtpmidid / 桥接把端口建齐
     done, failed = apply_links(st["links"], clear_first=True)
+    if failed:
+        time.sleep(3)
+        done2, failed2 = apply_links(failed and [f["pair"] for f in failed] or [], clear_first=False)
+        done += done2
+        failed = failed2
     print(f"[web] 开机恢复上次路由：成功 {done} 条，失败 {len(failed)} 条", flush=True)
 
 

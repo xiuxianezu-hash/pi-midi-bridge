@@ -82,11 +82,14 @@ svg{display:block}
   <div class="card">
     <div class="panel on" id="p-g">
       <h2>连线图 — 点两个端口即连接，点连线即断开</h2>
-      <div class="form" style="grid-template-columns:auto 1fr auto auto">
+      <div class="form" style="grid-template-columns:auto auto 1fr auto auto">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b94a3">
           <input type="checkbox" id="both" style="width:auto"> 双向连接</label>
-        <span></span>
-        <button id="clearlinks">清空非 System 连线</button>
+        <select id="gfilter" style="width:130px">
+          <option value="">全部连线</option><option value="ext">只看外部接口</option><option value="int">只看内部链接</option>
+        </select>
+        <span class="mono" style="font-size:11px">━ 橙实线=外部(RTP/网络)　┅ 灰虚线=内部(虚拟口/桥接)</span>
+        <button id="clearlinks">清空非 System</button>
         <button id="grefresh">刷新</button>
       </div>
       <div id="graph" style="margin-top:10px"></div>
@@ -155,6 +158,7 @@ async function api(path,opt){opt=opt||{};if(TOKEN)opt.headers=Object.assign({'X-
   return r.json()}
 const post=(p,o)=>api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});
 const wrap=n=>n.replace(/\s+/g,' ').trim();
+function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 const portLabel=(c,p)=>c.id+':'+p.id+'  '+wrap(p.name);
 
 /* ---------- 状态刷新 ---------- */
@@ -230,49 +234,121 @@ function renderPresets(){
   document.getElementById('preset-rows').innerHTML=rows||'<tr><td class="mono">还没有预设</td><td></td><td></td><td></td></tr>';
 }
 
-/* ---------- 连线图 ---------- */
+/* ---------- 连线图（eNSP 风格：从端口拖到端口画线） ---------- */
+let G={ports:{},devices:{}}, DRAG=null, GHOST=null;
+/* 外部接口 = rtpmidid 的 RTP 对端端口（128:x, x≠0）；其余(virmidi/Network Export)=内部链接 */
+function isExternalPort(key){
+  const parts=String(key).split(':');
+  if(parts[0]!=='128') return false;
+  return parts[1]!=='0';
+}
+function isPeerPort(key){ return isExternalPort(key) }
+function linkIsExt(a,b){ return isPeerPort(a)||isPeerPort(b) }
+function svgPt(e){
+  const svg=document.querySelector('#graph svg'); if(!svg) return {x:0,y:0};
+  const r=svg.getBoundingClientRect();
+  return {x:e.clientX-r.left, y:e.clientY-r.top};
+}
+function portAnchorOut(q){ return {x:q.x+q.w-9, y:q.y+q.h/2} }
+function portAnchorIn(q){ return {x:q.x+6, y:q.y+q.h/2} }
+
 function renderGraph(){
-  const box=document.getElementById('graph');
-  const clients=STATE.alsa.filter(c=>c.ports.length && c.id!==0);
-  const pos={}; const COLW=196, ROWH=46, PAD=18;
-  let maxRows=1;
-  clients.forEach((c,ci)=>{
-    maxRows=Math.max(maxRows,c.ports.length);
-    c.ports.forEach((p,pi)=>{ pos[c.id+':'+p.id]={x:PAD+ci*COLW, y:PAD+pi*ROWH, w:168, h:32, c, p}; });
-  });
-  const W=PAD*2+clients.length*COLW, H=PAD*2+maxRows*ROWH+10;
-  let svg='<svg width="'+W+'" height="'+H+'" xmlns="http://www.w3.org/2000/svg">';
-  // 连线
-  (STATE.links||[]).forEach(([s,d])=>{
-    const a=pos[s], b=pos[d]; if(!a||!b)return;
-    const x1=a.x+a.w, y1=a.y+a.h/2, x2=b.x, y2=b.y+b.h/2;
-    const mx=(x1+x2)/2;
-    svg+='<path d="M'+x1+' '+y1+' C'+mx+' '+y1+' '+mx+' '+y2+' '+x2+' '+y2+'" stroke="#41c9a0" stroke-width="1.6" fill="none" opacity="0.75" style="cursor:pointer" onclick="unlinkPair(\''+s+'\',\''+d+'\')"/>';
-    svg+='<circle cx="'+x2+'" cy="'+y2+'" r="3" fill="#41c9a0"/>';
-  });
-  // 节点
-  clients.forEach(c=>{
-    c.ports.forEach(p=>{
-      const q=pos[c.id+':'+p.id], key=c.id+':'+p.id;
-      let cls='node'+(c.id>=128?' rtp':'')+(SEL===key?' sel':'');
-      svg+='<g class="'+cls+'" style="cursor:pointer" onclick="pickNode(\''+key+'\')">'+
-           '<rect x="'+q.x+'" y="'+q.y+'" width="'+q.w+'" height="'+q.h+'" rx="6"/>'+
-           '<text x="'+(q.x+9)+'" y="'+(q.y+20)+'">'+escapeHtml(wrap(p.name).slice(0,22))+'</text>'+
-           '<text x="'+(q.x+q.w-8)+'" y="'+(q.y+20)+'" text-anchor="end" fill="#6f7a8c">'+c.id+':'+p.id+'</text>'+
-           '</g>';
+  const clients=(STATE.alsa||[]).filter(c=>c.ports.length&&c.id!==0&&!/PipeWire|Through/.test(c.name));
+  const COLW=236, HEAD=42, ROW=26, PAD=14, PW=COLW-48;
+  G={ports:{},devices:{}};
+  clients.forEach((c,i)=>{
+    const x=PAD+i*COLW, h=HEAD+c.ports.length*ROW+10;
+    G.devices[c.id]={x,y:PAD,w:PW,h,c};
+    c.ports.forEach((p,j)=>{
+      G.ports[c.id+':'+p.id]={x,y:PAD+HEAD+j*ROW,w:PW,h:ROW-6,c,p,key:c.id+':'+p.id};
     });
   });
-  svg+='</svg>';
-  box.innerHTML=svg;
-  document.getElementById('ghint').textContent = SEL? ('已选源 '+SEL+' — 再点一个端口作为目的') : '已选源：无（点端口选择源）';
+  const H=Math.max(140,...Object.values(G.devices).map(d=>d.h))+PAD*2+90;
+  const W=PAD*2+Math.max(1,clients.length)*COLW;
+  const f=document.getElementById('gfilter')?document.getElementById('gfilter').value:'';
+  let g='';
+  Object.values(G.devices).forEach(d=>{
+    const ext=d.c.id===128, vd=d.c.id>=24&&d.c.id<=27;
+    const stroke=ext?'#8a5cd0':(vd?'#3f5b73':'#2c3444');
+    const kind=ext?'RTP-MIDI 网关':(vd?'虚拟口 virmidi':'设备');
+    g+='<rect x="'+d.x+'" y="'+d.y+'" width="'+d.w+'" height="'+d.h+'" rx="9" fill="'+(ext?'#1e1a2b':(vd?'#1a2129':'#1a202b'))+'" stroke="'+stroke+'"/>'+
+       '<text x="'+(d.x+11)+'" y="'+(d.y+18)+'" fill="'+(ext?'#c6a6f5':(vd?'#9ec2dd':'#9fb0c9'))+'" font-size="11">'+escapeHtml(d.c.name)+'</text>'+
+       '<text x="'+(d.x+11)+'" y="'+(d.y+29)+'" fill="#5d697c" font-size="9">'+kind+'</text>'+
+       '<text x="'+(d.x+d.w-9)+'" y="'+(d.y+18)+'" text-anchor="end" fill="#5d697c" font-size="10">#'+d.c.id+'</text>';
+  });
+  Object.values(G.ports).forEach(q=>{
+    const ext=isPeerPort(q.key), sel=SEL===q.key;
+    g+='<g class="port" data-key="'+q.key+'" style="cursor:crosshair">'+
+      '<rect x="'+(q.x+6)+'" y="'+q.y+'" width="'+(q.w-12)+'" height="'+q.h+'" rx="5" fill="'+(sel?'#1f4a3d':'#202634')+'" stroke="'+(sel?'#41c9a0':(ext?'#e0a14a':'#39425a'))+'"'+((q.key.indexOf('128:')===0)?' stroke-dasharray="1 2"':'')+'/>'+
+      '<circle cx="'+(q.x+q.w-9)+'" cy="'+(q.y+q.h/2)+'" r="4.2" fill="'+(ext?'#e0a14a':'#41c9a0')+'"/>'+
+      '<text x="'+(q.x+12)+'" y="'+(q.y+q.h/2+4)+'" fill="#dfe4ee" font-size="11">'+escapeHtml(wrap(q.p.name).slice(0,20))+'</text>'+
+      '<text x="'+(q.x+q.w-18)+'" y="'+(q.y+q.h/2+4)+'" text-anchor="end" fill="#5d697c" font-size="10">'+q.key+'</text></g>';
+  });
+  const laneBase=H-16; let li=0, drawn=0;
+  (STATE.links||[]).forEach(([a,b])=>{
+    const A=G.ports[a],B=G.ports[b]; if(!A||!B) return;
+    const ext=linkIsExt(a,b);
+    if(f==='ext'&&!ext) return;
+    if(f==='int'&&ext) return;
+    const o=portAnchorOut(A), i=portAnchorIn(B);
+    const lane=laneBase-(li%8)*9; li++;
+    const col=ext?'#e0a14a':'#4d5b70';
+    g+='<path class="cable" d="M'+o.x+' '+o.y+' L'+o.x+' '+lane+' L'+i.x+' '+lane+' L'+i.x+' '+i.y+'" '+
+       'stroke="'+col+'" stroke-width="'+(ext?2.4:1.4)+'" '+
+       (ext?'':'stroke-dasharray="6 4"')+' fill="none" style="cursor:pointer" '+
+       'data-a="'+a+'" data-b="'+b+'" onclick="unlinkPair(\''+a+'\',\''+b+'\')"/>';
+    g+='<circle cx="'+i.x+'" cy="'+i.y+'" r="3" fill="'+col+'"/>';
+    drawn++;
+  });
+  window.__drawn=drawn;
+  document.getElementById('graph').innerHTML='<svg width="'+W+'" height="'+H+'" xmlns="http://www.w3.org/2000/svg">'+g+'</svg>';
+  bindPorts();
+  document.getElementById('ghint').textContent = (SEL
+    ? ('已选源 '+SEL+' — 拖到目的端口松开即连  ')
+    : '从端口空心圆按住拖到另一个端口松开 = 画线连接；单击端口选中也可  ') +
+    '｜ 现有连线 '+(STATE.links||[]).length+' 条 · 端口 '+Object.keys(G.ports).length+' 个 · 画出 '+(window.__drawn||0)+' 条';
 }
-function escapeHtml(s){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-
+function bindPorts(){
+  document.querySelectorAll('#graph g.port').forEach(el=>{
+    el.addEventListener('mousedown',ev=>{ev.preventDefault(); startDrag(el.dataset.key,ev)});
+  });
+}
+function startDrag(key,ev){
+  const q=G.ports[key]; if(!q) return;
+  SEL=key; renderGraph();
+  const o=portAnchorOut(G.ports[key]);
+  DRAG={from:key};
+  const svg=document.querySelector('#graph svg');
+  document.getElementById('ghint').textContent='正在从 '+key+' 拖线…';
+  const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+  path.setAttribute('stroke','#41c9a0'); path.setAttribute('stroke-width','2'); path.setAttribute('pointer-events','none');
+  path.setAttribute('stroke-dasharray','5 4'); path.setAttribute('fill','none');
+  svg.appendChild(path);
+  const move=e=>{
+    const t=svgPt(e); const mx=(o.x+t.x)/2;
+    path.setAttribute('d','M'+o.x+' '+o.y+' C'+mx+' '+o.y+' '+mx+' '+t.y+' '+t.x+' '+t.y);
+  };
+  const up=e=>{
+    document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up);
+    if(path.parentNode) path.parentNode.removeChild(path);
+    const el=document.elementFromPoint(e.clientX,e.clientY);
+    const gNode=el&&el.closest?el.closest('g.port'):null;
+    const target=gNode&&gNode.dataset.key;
+    if(target&&target!==key) finishDrag(key,target);
+    else { SEL=null; renderGraph(); }
+  };
+  document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+}
+async function finishDrag(src,dst){
+  const both=document.getElementById('both').checked;
+  const r=await post('/api/alsa',{op:'link',src,dst,both});
+  toast(r.ok?('已连线 '+src+' → '+dst+(both?'（双向）':'')):('失败：'+(r.out||'')));
+  SEL=null; refresh();
+}
 async function pickNode(key){
   if(!SEL){ SEL=key; renderGraph(); return }
   if(SEL===key){ SEL=null; renderGraph(); return }
-  const r=await post('/api/alsa',{op:'link',src:SEL,dst:key,both:document.getElementById('both').checked});
-  toast(r.ok?('已连接 '+SEL+' → '+key):('失败：'+(r.out||''))); SEL=null; refresh();
+  await finishDrag(SEL,key);
 }
 async function unlinkPair(s,d){
   if(!confirm('断开 '+s+' → '+d+' ?'))return;
@@ -379,6 +455,7 @@ document.getElementById('preset-save').onclick=async()=>{
   const r=await post('/api/presets',{op:'save',name}); toast(r.ok?'已保存':'失败：'+(r.error||'')); refresh();
 };
 document.getElementById('grefresh').onclick=()=>{SEL=null;refresh()};
+document.getElementById('gfilter').onchange=renderGraph;
 document.getElementById('clearlinks').onclick=async()=>{
   if(!confirm('清空所有非 System 连线？'))return;
   for(const [a,b] of (STATE.links||[])){ if(a.startsWith('0:')||b.startsWith('0:'))continue; await post('/api/alsa',{op:'unlink',src:a,dst:b}); }
