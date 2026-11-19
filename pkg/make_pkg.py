@@ -49,6 +49,10 @@ FILES = {
     "etc/default/pi-midi-bridge": ("644", (SRC / "pi-midi-bridge.default").read_text()),
     "usr/share/doc/pi-midi-bridge/README.md": ("644", (REPO / "README.md").read_text()),
     "usr/share/doc/pi-midi-bridge/CHANGELOG.md": ("644", (REPO / "CHANGELOG.md").read_text()),
+    "usr/bin/pi-midi-web": ("755", (SRC / "pi_midi_web.py").read_text()),
+    "usr/share/pi-midi-bridge/web/index.html": ("644", (SRC / "web" / "index.html").read_text()),
+    "lib/systemd/system/pi-midi-web.service": ("644", (SRC / "pi-midi-web.service").read_text()),
+    "etc/default/pi-midi-web": ("644", (SRC / "pi-midi-web.default").read_text()),
     "usr/share/doc/pi-midi-bridge/copyright": ("644", "MIT License, see LICENSE\n"),
 }
 
@@ -61,7 +65,7 @@ Priority: optional
 Depends: python3 (>= 3.9), python3-venv, python3-pip, alsa-utils, bluez
 Recommends: rtpmidid
 Homepage: {{homepage}}
-Description: BLE-MIDI 外设与 ALSA/RTP-MIDI 之间的树莓派 MIDI 路由器
+Description: BLE-MIDI 外设与 ALSA/RTP-MIDI 之间的树莓派 MIDI 路由器（含网页管理端）
  让树莓派同时充当 BLE-MIDI 外设（Mac/iPad/手机可直接连接）和
  RTP-MIDI 会话端点（rtpmidid），两者通过 snd-virmidi 虚拟 MIDI 口互通。
  内含解帧修复、running status 修复、SYSEX 透传、断连自动重广播、
@@ -99,6 +103,8 @@ fi
 systemctl daemon-reload || true
 systemctl enable "$PKG.service" || true
 systemctl restart "$PKG.service" || true
+systemctl enable pi-midi-web.service || true
+systemctl restart pi-midi-web.service || true
 mkdir -p /var/log
 
 exit 0
@@ -107,6 +113,8 @@ exit 0
 PRERM = """#!/bin/sh
 set -e
 if [ "$1" = "remove" ] || [ "$1" = "upgrade" ] || [ "$1" = "deconfigure" ]; then
+  systemctl stop pi-midi-web 2>/dev/null || true
+  systemctl disable pi-midi-web 2>/dev/null || true
   systemctl stop pi-midi-bridge 2>/dev/null || true
   systemctl disable pi-midi-bridge 2>/dev/null || true
 fi
@@ -117,7 +125,7 @@ POSTRM = """#!/bin/sh
 set -e
 if [ "$1" = "purge" ]; then
   rm -rf /var/lib/pi-midi-bridge
-  rm -f /var/log/pi-midi-bridge.log
+  rm -f /var/log/pi-midi-bridge.log /var/log/pi-midi-web.log
   rm -f /etc/modules-load.d/pi-midi-bridge.conf
   systemctl daemon-reload 2>/dev/null || true
 fi
@@ -143,7 +151,8 @@ def main():
         CONTROL.format(maintainer=os.environ.get("MAINTAINER", "ee <ee@rpi3>"),
                        homepage=os.environ.get("HOMEPAGE", "https://github.com"))
     )
-    (deb / "conffiles").write_text("/etc/default/pi-midi-bridge\n")
+    (deb / "conffiles").write_text(
+        "/etc/default/pi-midi-bridge\n/etc/default/pi-midi-web\n")
     (deb / "postinst").write_text(POSTINST)
     (deb / "prerm").write_text(PRERM)
     (deb / "postrm").write_text(POSTRM)

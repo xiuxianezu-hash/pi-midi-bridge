@@ -1,0 +1,17 @@
+[Unit]
+Description=pi-midi-web - MIDI 路由网页管理端
+After=network-online.target pi-midi-bridge.service
+Wants=pi-midi-bridge.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/pi-midi-bridge
+EnvironmentFile=-/etc/default/pi-midi-web
+ExecStart=/var/lib/pi-midi-bridge/venv/bin/python /usr/bin/pi-midi-web
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/pi-midi-web.log
+StandardError=append:/var/log/pi-midi-web.log
+
+[Install]
+WantedBy=multi-user.target

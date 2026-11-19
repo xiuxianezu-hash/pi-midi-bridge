@@ -1,5 +1,12 @@
 # 更新记录
 
+## 1.1.0 — 2026-11-19
+
+- 新增网页管理端 `pi-midi-web`（端口 8080，纯标准库）：蓝牙状态 / RTP 设备发现与连接 / ALSA 路由矩阵
+- 支持手动填写 `IP:端口` 连接任意外部 RTP-MIDI 设备（rtpmidid `connect` 命令，参数必须是 `[name, hostname, port]` 三个字符串）
+- 多设备协同：RTP 侧可多对端互通，树莓派作星型 hub；路由通过 `aconnect` 完成，不动 rtpmidid 内部路由
+- 新增 `/etc/default/pi-midi-web` 配置与可选访问 token
+
 ## 1.0.1 — 2026-11-19
 
 - 修复：`pi-midi-bridge --version` 不再依赖 bumble（可在系统 python 下直接调用）
