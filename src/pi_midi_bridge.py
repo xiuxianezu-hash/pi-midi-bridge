@@ -15,9 +15,12 @@ import asyncio
 import logging
 import signal
 import os
+import re
 import select
+import subprocess
 import sys
 import threading
+import time
 
 from bumble.core import AdvertisingData, UUID
 from bumble.device import Device, DeviceConfiguration
@@ -273,6 +276,59 @@ class Bridge:
             print(f"[BLE] 通知失败 {type(ex).__name__}: {ex}", flush=True)
 
 
+
+RTP_SYNC_INTERVAL = 5      # 秒
+
+
+def _rtp_sync_loop():
+    """rtpmidid 每接受一条 RTP 连接就新建一个独立 ALSA 端口（128:2、128:3…），
+    这些端口默认只连到观察者，不连桥的读取口 —— 网络进来的 MIDI 就断在 ALSA 层。
+    这里每 5 秒把 rtpmidid 的每个端口都接到桥的读取口，RTP 才能走到蓝牙。"""
+    read_client = read_port = None
+    while True:
+        try:
+            if read_client is None:
+                m = re.search(r"midiC(\d+)D0", find_virmidi())
+                card = m.group(1) if m else "0"
+                blocks = re.split(r"^client ", subprocess.run(
+                    ["aconnect", "-l"], capture_output=True, text=True, timeout=5).stdout, flags=re.M)
+                for b in blocks:
+                    if f"'Virtual Raw MIDI {card}-0'" in b:
+                        read_client = b.split(":", 1)[0].strip()
+                        for line in b.splitlines():
+                            mm = re.match(r"\s+(\d+) '", line)
+                            if mm:
+                                read_port = mm.group(1)
+                                break
+                if read_client is None:
+                    raise RuntimeError("未找到 Virtual Raw MIDI 客户端")
+                print(f"[RTP] 桥读取口 = {read_client}:{read_port}", flush=True)
+
+            blocks = re.split(r"^client ", subprocess.run(
+                ["aconnect", "-l"], capture_output=True, text=True, timeout=5).stdout, flags=re.M)
+            rtp_client, ports, sources = None, [], set()
+            for b in blocks:
+                if "'rtpmidid'" in b:
+                    rtp_client = b.split(":", 1)[0].strip()
+                    ports = [int(x) for x in re.findall(r"^\s+(\d+) '", b, re.M)]
+                elif b.startswith(f"{read_client}:"):
+                    for line in b.splitlines():
+                        if "Connected From:" in line:
+                            sources = set(s.strip() for s in line.split("Connected From:")[1].split(","))
+            if rtp_client:
+                for p in ports:
+                    if p == 0:
+                        continue            # 0 = Network Export（ALSA→网络方向，不接回读口，避免回环）
+                    if f"{rtp_client}:{p}" in sources:
+                        continue
+                    subprocess.run(["aconnect", f"{rtp_client}:{p}", f"{read_client}:{read_port}"],
+                                   capture_output=True, timeout=5)
+                    print(f"[RTP] 自动连线 {rtp_client}:{p} -> {read_client}:{read_port}", flush=True)
+        except Exception as ex:
+            print(f"[RTP] 同步失败 {type(ex).__name__}: {ex}", flush=True)
+        time.sleep(RTP_SYNC_INTERVAL)
+
+
 bridge = Bridge()
 
 
@@ -380,6 +436,7 @@ async def main():
                 bridge.feed_from_alsa(data)
 
         threading.Thread(target=_alsa_reader, daemon=True).start()
+        threading.Thread(target=_rtp_sync_loop, daemon=True).start()
         print("[桥] BLE ↔ ALSA 双向转发已开启", flush=True)
 
         if os.environ.get("DEMO", "0") == "1":
