@@ -198,7 +198,8 @@ function stateAll(){ // 标题只做节流刷新，真正的键位绘制由 pain
     statPending=false;
     const n2=[]; ACTIVE.forEach((v,k)=>{ if(v.in||v.out) n2.push(k); });
     const s=document.getElementById("pianostats");
-    if(s) s.textContent=n2.length?`按下的键（${n2.length}）：`+n2.map(midiName).join(" "):"";
+    const ped=sustainOn?"  · 踏板 CC64 踩下（仅作状态提示，不挂住琴键）":"";
+    if(s) s.textContent=(n2.length?`按下的键（${n2.length}）：`+n2.map(midiName).join(" "):"无按键")+ped;
   },60);
 }
 
@@ -212,32 +213,24 @@ function paint(m){
 function keyOn(m,dir){
   if(!KEYS.has(m)) return;
   let a=ACTIVE.get(m); if(!a){a={in:false,out:false};ACTIVE.set(m,a);}
-  a[dir]=true; SUSTAINED.delete(m); paint(m); stateAll();
+  a[dir]=true; paint(m); stateAll();
   clearTimeout(WATCH.get(m));
-  WATCH.set(m,setTimeout(()=>{  // 5s 兜底释键：防丢 off 事件卡键（踏板踩住时不掐）
-    if(sustainOn){ WATCH.delete(m); return; }
+  WATCH.set(m,setTimeout(()=>{  // 5s 兜底释键：防丢 off。注意两个方向一起清，
+                                 // 否则 in/out 各挂一个定时器时，后建的只会清自己那一向，另一向永久常亮
+    WATCH.delete(m);
     const b=ACTIVE.get(m); if(!b) return;
-    b[dir]=false; if(!b.in&&!b.out) ACTIVE.delete(m);
+    b.in=false; b.out=false; ACTIVE.delete(m);
     paint(m); stateAll();
   },5000));
 }
 
 function keyOff(m,dir){
   const a=ACTIVE.get(m); if(!a) return;
-  if(sustainOn){                                    // 踏板踩着：先挂住，交给 releasePedal
-    SUSTAINED.add(m); clearTimeout(WATCH.get(m)); WATCH.delete(m); return;
-  }
+  clearTimeout(WATCH.get(m)); WATCH.delete(m);
   a[dir]=false; if(!a.in&&!a.out) ACTIVE.delete(m);
   paint(m); stateAll();
 }
 
-function releasePedal(){
-  SUSTAINED.forEach(m=>{
-    const a=ACTIVE.get(m); if(!a){SUSTAINED.delete(m);return;}
-    a.in=false; a.out=false; ACTIVE.delete(m); paint(m);
-  });
-  SUSTAINED.clear(); stateAll();
-}
 
 function pianoFeed(events){
   let touched=false;
@@ -245,11 +238,13 @@ function pianoFeed(events){
     if(S.dev && e.key!==S.dev) return;
     if(e.kind==="cc"){
       if(Number(e.d1)===64){
-        const v=Number(e.d2)||0, was=sustainOn;
+        const v=Number(e.d2)||0;
         sustainOn=v>=64;
         clearTimeout(SUS_T);
-        if(sustainOn) SUS_T=setTimeout(()=>{ if(sustainOn){sustainOn=false;releasePedal();} },12000); // 12s 无更新自动松踏板
-        if(was&&!sustainOn) releasePedal();
+        // 踏板只作为状态提示显示：观测台里"按下的键"必须等于真实按键，
+        // 不能让踏板把已松开的键一直挂在屏幕上（源端常常只发 127、从不发 0）
+        if(sustainOn) SUS_T=setTimeout(()=>{ sustainOn=false; stateAll(); },8000);
+        stateAll();
       }
       return;
     }
@@ -389,7 +384,7 @@ document.getElementById("pause").onclick=e=>{
 document.getElementById("clear").onclick=()=>{
   S.inRows=[];S.outRows=[];S.notices=[];renderAll();
   WATCH.forEach(t=>clearTimeout(t)); WATCH.clear();
-  ACTIVE.clear(); SUSTAINED.clear(); sustainOn=false;
+  ACTIVE.clear(); sustainOn=false; clearTimeout(SUS_T);
   KEYS.forEach((el,m)=>paint(m));
   document.getElementById("pianostats").textContent="";
 };
