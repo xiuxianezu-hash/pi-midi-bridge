@@ -2,512 +2,257 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>pi-midi 路由管理</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIDI 观察台 · pi-midi-bridge</title>
 <style>
-:root{--bg:#0f1115;--panel:#171a21;--line:#272c36;--fg:#e6e9ef;--dim:#8b94a3;--acc:#41c9a0;--bad:#e05c5c;--blue:#5b8def}
+:root{
+  --bg:#f6f7f9; --card:#fff; --line:#e3e6ea; --text:#1d2126; --sub:#6b7280;
+  --out:#1f7a5a; --in:#2b6cb0; --warn:#b45309; --chip:#eef1f5;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
-header{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line)}
-h1{font-size:16px;margin:0;font-weight:600}
-.tag{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:1px 9px}
-.tabs{display:flex;gap:6px;margin-left:auto}
-.tab{border:1px solid var(--line);background:#1b1f28;color:var(--dim);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer}
-.tab.on{color:#08120e;background:var(--acc);border-color:var(--acc);font-weight:600}
-main{padding:16px;display:grid;gap:16px}
-.top{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
-.card h2{font-size:12px;margin:0 0 10px;color:var(--dim);font-weight:600;letter-spacing:.6px}
-.row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line)}
-.row:last-child{border-bottom:0}
-.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim)}
-button{background:#232833;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer}
-button:hover{border-color:var(--acc);color:var(--acc)}
-button.pri{background:var(--acc);border-color:var(--acc);color:#08120e;font-weight:600}
-button.danger:hover{border-color:var(--bad);color:var(--bad)}
-select,input{background:#1d222b;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:12px;width:100%}
-.form{display:grid;grid-template-columns:1fr 92px auto;gap:8px;margin-top:10px}
-.pill{padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--dim)}
-.ok{color:var(--acc);border-color:var(--acc)}.bad{color:var(--bad);border-color:var(--bad)}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+header{position:sticky;top:0;z-index:9;background:#fff;border-bottom:1px solid var(--line);
+  padding:10px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+h1{margin:0;font-size:15px;font-weight:600;letter-spacing:.3px}
+h1 span{font-weight:400;color:var(--sub);font-size:12px;margin-left:6px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto}
+.chip{background:var(--chip);border-radius:20px;padding:3px 10px;font-size:12px;color:var(--sub);white-space:nowrap}
+.chip b{color:var(--text);font-weight:600}
+.chip.ok{background:#e7f5ee;color:#1f7a5a}
+.chip.off{background:#fdeaea;color:#b0342b}
+.chip.warn{background:#fdf3e3;color:var(--warn)}
+main{display:grid;grid-template-columns:310px 1fr;gap:12px;padding:12px 16px 24px;align-items:start}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px}
+.card h2{margin:0;padding:9px 12px;font-size:12.5px;font-weight:600;border-bottom:1px solid var(--line);
+  color:var(--sub);display:flex;justify-content:space-between}
+#devs{padding:2px 0;max-height:62vh;overflow:auto}
+.grp{padding:6px 12px 2px;font-size:11.5px;color:var(--sub);letter-spacing:.5px}
+.grp b{color:var(--text)}
+.dev{padding:5px 12px;cursor:pointer;border-left:3px solid transparent}
+.dev:hover{background:#f9fafb}
+.dev.sel{background:#eef4ff;border-left-color:#2b6cb0}
+.dev .n{display:flex;justify-content:space-between;gap:8px}
+.dev .name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dev .rt{font-size:11.5px;color:var(--sub);white-space:nowrap}
+.dev .meta{font-size:11px;color:var(--sub);display:flex;gap:8px}
+.dev .meta .o{color:var(--out)} .dev .meta .i{color:var(--in)}
+.bar{display:flex;flex-wrap:wrap;gap:6px;padding:9px 12px;border-bottom:1px solid var(--line);align-items:center}
+.bar select,.bar input[type=search]{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:5px;background:#fff}
+.bar button{font:inherit;padding:3px 9px;border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer}
+.bar button.on{background:#2b6cb0;border-color:#2b6cb0;color:#fff}
+.sep{width:1px;height:18px;background:var(--line);margin:0 2px}
 table{width:100%;border-collapse:collapse;font-size:12px}
-td,th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line);color:var(--dim)}
-th{color:#c9d0dc;font-weight:500}
-.panel{display:none}.panel.on{display:block}
-#graph{width:100%;height:520px;overflow:auto;background:#12151b;border:1px solid var(--line);border-radius:10px}
-svg{display:block}
-.node rect{fill:#1e2431;stroke:#39425a;rx:6}
-.node text{fill:#dfe4ee;font-size:11px}
-.node.cc rect{fill:#1b2735}
-.node.rtp rect{fill:#2a2231}
-.node.sel rect{stroke:var(--acc);stroke-width:2}
-.node:hover rect{stroke:var(--blue)}
-.legend{font-size:11px;color:var(--dim);margin-top:8px;line-height:1.7}
-#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#232833;border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:12px;opacity:0;transition:.25s;pointer-events:none}
-#toast.show{opacity:1}
-#mon{height:300px;overflow:auto;background:#12151b;border:1px solid var(--line);border-radius:10px;padding:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#c9d0dc}
-#mon div{padding:1px 0;border-bottom:1px dashed #1e2431}
-.hint{font-size:11px;color:var(--dim);margin-top:6px}
-#ltable td{padding:3px 4px}
-#ltable tr.hl td{background:#1d3a31}
-#ltable select{font-size:11px;padding:4px 6px}
+thead th{position:sticky;top:0;background:#fbfcfd;text-align:left;font-weight:600;color:var(--sub);
+  padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+tbody td{padding:3px 8px;border-bottom:1px solid #f1f3f5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+tbody tr:hover{background:#fafbfc}
+.d-out{color:var(--out);font-weight:600}
+.d-in{color:var(--in);font-weight:600}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+#evwrap{max-height:62vh;overflow:auto}
+#rtp{padding:8px 12px;font-size:12px;color:var(--sub)}
+#rtp .p{display:flex;justify-content:space-between;gap:8px;padding:2px 0;color:var(--text)}
+#rtp .p small{color:var(--sub)}
+footer{padding:8px 16px;color:var(--sub);font-size:11.5px}
 </style>
 </head>
 <body>
 <header>
-  <h1>pi-midi 路由管理</h1><span class="tag" id="ver">…</span><span class="tag" id="tick">-</span>
-  <div class="tabs">
-    <button class="tab on" data-tab="g">连线图</button>
-    <button class="tab" data-tab="m">路由表</button>
-    <button class="tab" data-tab="p">预设</button>
-    <button class="tab" data-tab="v">监视器</button>
-  </div>
+  <h1>MIDI 观察台<span id="ver">pi-midi-web</span></h1>
+  <div class="chips" id="chips"></div>
 </header>
+
 <main>
-  <div class="top">
-    <div class="card">
-      <h2>蓝牙（BLE-MIDI 外设）</h2>
-      <div class="row"><span>广播</span><span id="ble-adv" class="pill">…</span></div>
-      <div class="row"><span>链路</span><span id="ble-link" class="pill">…</span></div>
-      <div class="row"><span>对端地址</span><span id="ble-peer" class="mono">-</span></div>
-      <div class="legend">BLE 外设同一时刻只支持 1 条链路。</div>
-    </div>
-    <div class="card">
-      <h2>RTP-MIDI 设备</h2>
-      <div id="rtp-list"><div class="row"><span class="mono">加载中…</span></div></div>
-      <div class="form">
-        <input id="rtp-host" placeholder="主机 IP 或名称，如 192.168.31.142">
-        <input id="rtp-port" value="5004">
-        <button class="pri" id="rtp-add">连接</button>
-      </div>
-    </div>
-  </div>
+  <section class="card">
+    <h2><span>设备（按类别）</span><span id="devcount"></span></h2>
+    <div id="devs"></div>
+    <div style="border-top:1px solid var(--line)"><h2><span>RTP 对端</span></h2><div id="rtp"></div></div>
+  </section>
 
-  <div class="card">
-    <div class="panel on" id="p-g">
-      <h2>连线表 — 选好「源端口 / 目的端口」，点「应用」下发到树莓派</h2>
-      <table id="ltable">
-        <thead><tr><th style="width:46%">源端口（MIDI 从哪出来）</th><th style="width:26px;text-align:center">→</th><th style="width:46%">目的端口（送到哪去）</th><th></th></tr></thead>
-        <tbody id="link-rows"></tbody>
+  <section class="card">
+    <h2><span>事件流（输入 / 输出）</span><span id="rate"></span></h2>
+    <div class="bar">
+      <select id="fdev"><option value="">全部设备</option></select>
+      <div class="sep"></div>
+      <button class="on" data-dir="">全部</button>
+      <button data-dir="out">输出 OUT</button>
+      <button data-dir="in">输入 IN</button>
+      <div class="sep"></div>
+      <select id="fch"><option value="">全部通道</option></select>
+      <input type="search" id="fq" placeholder="搜索 事件 / 数据 / 原始行" style="width:170px">
+      <div class="sep"></div>
+      <button id="pause">暂停</button>
+      <button id="clear">清屏</button>
+    </div>
+    <div class="bar" id="kinds"></div>
+    <div id="evwrap">
+      <table>
+        <thead><tr>
+          <th style="width:86px">时间</th><th style="width:46px">方向</th>
+          <th>设备</th><th style="width:64px">端口</th><th style="width:38px">Ch</th>
+          <th style="width:132px">事件</th><th style="width:110px">数据</th><th style="width:56px">音名</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
       </table>
-      <div class="form" style="grid-template-columns:auto auto 1fr auto auto;margin-top:10px">
-        <button id="lt-add">＋ 添加一行</button>
-        <button class="pri" id="lt-apply">应用</button>
-        <span class="mono" id="lt-state">-</span>
-        <button id="lt-reload">从设备重新载入</button>
-        <select id="gfilter" style="width:130px">
-          <option value="">全部连线</option><option value="ext">只看外部接口</option><option value="int">只看内部链接</option>
-        </select>
-      </div>
-      <div class="legend" id="lt-hint">表格就是真实配置：一条线 = 一行。改完点「应用」才下发；点「从设备重新载入」可放弃修改。</div>
-      <h2 style="margin-top:18px">连线效果预览（只读）— 橙色实线=外部 RTP 接口　灰色虚线=内部桥接</h2>
-      <div id="graph"></div>
-      <div class="legend" id="ghint">-</div>
     </div>
-
-    <div class="panel" id="p-m">
-      <h2>路由表（精确选择端口）</h2>
-      <div class="form">
-        <select id="alsrc"></select><select id="aldst"></select>
-        <button class="pri" id="allink">连接</button>
-      </div>
-      <div class="form" style="grid-template-columns:1fr 1fr auto">
-        <button id="allink-both">双向连接</button><button id="alunlink">断开</button><button id="alrefresh">刷新</button>
-      </div>
-      <table style="margin-top:12px"><thead><tr><th>源</th><th>→ 目的</th></tr></thead><tbody id="al-links"></tbody></table>
-    </div>
-
-    <div class="panel" id="p-p">
-      <h2>路由预设 — 一键保存 / 回放当前连线</h2>
-      <div class="form">
-        <input id="preset-name" placeholder="预设名，如 蓝牙→Mac+Windows">
-        <button class="pri" id="preset-save" style="grid-column:span 2">保存当前连线</button>
-      </div>
-      <table style="margin-top:12px"><thead><tr><th>预设</th><th>连线数</th><th>保存时间</th><th></th></tr></thead><tbody id="preset-rows"></tbody></table>
-      <div class="hint">「应用」会先清掉现有的非 System 连接，再按预设重建，避免叠加出环。</div>
-      <h2 style="margin-top:18px">开机自动恢复</h2>
-      <div class="form" style="grid-template-columns:auto 1fr auto">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b94a3">
-          <input type="checkbox" id="auto-on" style="width:auto"> 开机后恢复上次连线</label>
-        <span class="mono" id="auto-info">-</span>
-        <button id="auto-snap">现在记录当前连线</button>
-      </div>
-      <div class="hint">开关打开后，树莓派重启（或 web 服务重启）会等 4 秒自动把上次的连线重建回来。</div>
-    </div>
-
-    <div class="panel" id="p-v">
-      <h2>MIDI 监视器 — 解析后按设备 / 方向 / 通道 / 类型过滤</h2>
-      <div class="form" style="grid-template-columns:1fr auto auto">
-        <select id="mon-port"></select>
-        <button class="pri" id="mon-start">开始</button>
-        <button id="mon-stop">停止</button>
-      </div>
-      <div class="form" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:8px">
-        <select id="m-dev"><option value="">设备：全部</option></select>
-        <select id="m-dir"><option value="">方向：全部</option><option value="OUT">输出 OUT</option><option value="IN">输入 IN</option></select>
-        <select id="m-kind"><option value="">类型：全部</option><option value="note">音符 Note</option><option value="cc">控制器 CC</option><option value="pc">音色 Program</option><option value="pb">弯音 Pitch</option><option value="sysex">SysEx</option><option value="clock">时钟 Clock</option><option value="after">触后</option><option value="realtime">实时</option><option value="other">其它</option></select>
-        <select id="m-ch"><option value="">通道：全部</option></select>
-      </div>
-      <table style="margin-top:10px"><thead><tr>
-        <th style="width:78px">时间</th><th style="width:44px">方向</th><th>端口</th><th>设备</th>
-        <th style="width:40px">Ch</th><th>事件</th><th>数据</th><th style="width:64px">音符</th>
-      </tr></thead><tbody id="mon-rows"></tbody></table>
-      <div class="hint">方向说明：OUT = 该端口自己发出；IN = 该端口从上游收到（按当前路由推导）。累计 <span id="mon-count">0</span> 条，只保留最近 300 行。</div>
-    </div>
-  </div>
+  </section>
 </main>
-<div id="toast"></div>
+<footer id="foot">纯观测页面：不修改任何蓝牙 / RTP / ALSA 设置，只读取并展示当前协议往来。</footer>
+
 <script>
-window.onerror=(m,src,l)=>{const g=document.getElementById('ghint');if(g)g.textContent='JS 错误: '+m+' @line '+l;console.error(m,l);};
-let TOKEN = localStorage.getItem('pimidi.token') || '';
-let STATE = null, SEL = null, MSINCE = 0, MTIMER = null, CURTAB = 'g';
+const KINDS=[["note_on","NoteOn"],["note_off","NoteOff"],["cc","CC"],["pc","PC"],
+             ["pb","Pitch"],["sysex","SysEx"],["clock","Clock"],["after","After"],["realtime","Real"],["other","其它"]];
+const CATORDER=["蓝牙 Pi-MIDI","内部虚拟口","内部桥（RTP 引擎）","RTP 外部设备","其它"];
+const S={since:0, paused:false, dev:"", dir:"", kinds:new Set(), ch:"", q:"",
+         rows:[], counters:{}, evTotal:0, tPrev:0, rate:0};
 
-function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),1900)}
-async function api(path,opt){opt=opt||{};if(TOKEN)opt.headers=Object.assign({'X-Token':TOKEN},opt.headers||{});
-  const r=await fetch(path,opt);if(r.status===401){TOKEN=prompt('需要访问 token：')||'';localStorage.setItem('pimidi.token',TOKEN);return api(path,opt)}
-  return r.json()}
-const post=(p,o)=>api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});
-const wrap=n=>n.replace(/\s+/g,' ').trim();
-function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-const portLabel=(c,p)=>c.id+':'+p.id+'  '+wrap(p.name);
-function allPorts(){
-  const out=[];
-  (STATE.alsa||[]).filter(c=>c.ports.length&&c.id!==0&&!/PipeWire|Through/.test(c.name))
-    .forEach(c=>c.ports.forEach(p=>out.push({c,p})));
-  return out;
-}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function hhmmss(t){const d=new Date(t*1000);return d.toLocaleTimeString("zh-CN",{hour12:false})+"."+String(d.getMilliseconds()).padStart(3,"0");}
 
-/* ---------- 状态刷新 ---------- */
-async function refresh(){
-  try{ STATE = await api('/api/state') }catch(e){ document.getElementById('tick').textContent='连接失败'; return }
-  document.getElementById('ver').textContent='v'+STATE.version;
-  document.getElementById('tick').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});
-  const steps=[['renderBle',renderBle],['renderRtp',renderRtp],['fillSelects',fillSelects],
-    ['fillDevFilter',fillDevFilter],['renderTable',renderTable],['renderPresets',renderPresets],
-    ['renderRestore',renderRestore],
-    ['表格',()=>{ if(LT===null) ltReload(); else renderLinkTable(); }],['renderGraph',renderGraph]];
-  for(const [n,fn] of steps){
-    try{ fn() }catch(e){
-      const g=document.getElementById('ghint');
-      if(g) g.textContent='渲染出错于 '+n+'：'+e.message;
-      console.error(n,e); break;
-    }
-  }
-  if(MBUF.length) renderMon();
+function chips(d){
+  const br=d.bridge||{}, ble=d.ble||{}, rtp=(d.rtp&&d.rtp.peers)||[];
+  const c=[];
+  c.push(`<span class="chip ${br.bridge_active?"ok":"off"}">桥 <b>${br.bridge_active?"运行中":"未运行"}</b></span>`);
+  c.push(`<span class="chip ${ble.advertising?"ok":"warn"}">广播 <b>${ble.advertising?"Pi-MIDI":"停"}</b></span>`);
+  c.push(`<span class="chip ${ble.connected?"ok":""}">蓝牙链路 <b>${ble.connected?esc(ble.peer||"已连接"):"空闲"}</b></span>`);
+  c.push(`<span class="chip">BLE 累计 <b>收 ${br.ble_recv||0} / 发 ${br.ble_sent||0}</b>${br.ble_drop?` 丢 ${br.ble_drop}`:""}</span>`);
+  c.push(`<span class="chip">RTP 对端 <b>${rtp.length}</b></span>`);
+  c.push(`<span class="chip ${d.running?"ok":"off"}">观察器 <b>${d.running?"运行":"停止"}</b></span>`);
+  document.getElementById("chips").innerHTML=c.join("");
+  document.getElementById("ver").textContent="pi-midi-web "+d.version;
 }
 
-function renderBle(){
-  const b=STATE.ble;
-  const adv=document.getElementById('ble-adv'), lk=document.getElementById('ble-link');
-  adv.textContent=b.advertising?'广播中':'未广播'; adv.className='pill '+(b.advertising?'ok':'bad');
-  lk.textContent=b.connected?'已连接':'等待连接'; lk.className='pill '+(b.connected?'ok':'');
-  document.getElementById('ble-peer').textContent=b.peer||'-';
-}
-
-function renderRtp(){
-  const rtp=STATE.rtp||{};
-  const peers=(rtp.router||[]).filter(p=>p.peer);
-  const remotes=(rtp.mdns&&rtp.mdns.remote_announcements)||[];
-  const uniq=[...new Map(remotes.map(r=>[r.name,r])).values()];
-  let html='';
-  peers.forEach(p=>{
-    const lat=(p.peer.latency_ms&&p.peer.latency_ms.last)||0;
-    html+='<div class="row"><span>'+p.name+' <span class="mono">#'+p.id+' · '+lat+' ms</span></span>'+
-          '<button class="danger" onclick="rtpRemove('+p.id+')">断开</button></div>';
-  });
-  if(!peers.length) html+='<div class="row"><span class="mono">暂无已连接的对端</span></div>';
-  uniq.forEach(r=>{
-    if(peers.some(p=>p.name===r.name))return;
-    html+='<div class="row"><span>'+r.name+' <span class="mono">'+r.hostname+':'+r.port+'</span></span>'+
-          '<button onclick="rtpConnect(\''+r.hostname+'\','+r.port+',\''+r.name.replace(/'/g,"\\'")+'\')">连接</button></div>';
-  });
-  document.getElementById('rtp-list').innerHTML=html;
-}
-
-function fillSelects(){
-  const popts=allPorts().map(o=>'<option value="'+o.c.id+':'+o.p.id+'">'+portLabel(o.c,o.p)+'</option>').join('');
-  const mopts='<option value="all">★ 全部端口（全局）</option>'+popts;
-  ['alsrc','aldst'].forEach(id=>{const el=document.getElementById(id),v=el.value;el.innerHTML=popts;if(v)el.value=v;});
-  const mo=document.getElementById('mon-port'), mv=mo.value; mo.innerHTML=mopts; if(mv)mo.value=mv;
-}
-
-function renderTable(){
-  let rows='';
-  (STATE.links||[]).forEach(([s,d],i)=>{
-    rows+='<tr><td>'+s+'</td><td>'+d+'</td><td style="text-align:right">'+
-          '<button class="danger" onclick="rbUnlink(\''+s+'\',\''+d+'\')">断开</button></td></tr>';
-  });
-  document.getElementById('al-links').innerHTML=rows||'<tr><td class="mono">还没有任何路由</td><td></td><td></td></tr>';
-}
-
-function renderRestore(){
-  const r=(STATE.restore||{});
-  const on=document.getElementById('auto-on'), info=document.getElementById('auto-info');
-  on.checked=!!r.auto;
-  info.textContent=(r.links?r.links.length:0)+' 条 · '+(r.saved||'未记录');
-}
-function renderPresets(){
-  const ps=STATE.presets||{}, keys=Object.keys(ps);
-  let rows='';
-  keys.forEach(k=>{
-    rows+='<tr><td>'+k+'</td><td>'+(ps[k].pairs||[]).length+'</td><td class="mono">'+(ps[k].saved||'')+'</td>'+
-      '<td style="text-align:right"><button onclick="applyPreset(\''+k.replace(/'/g,"\\'")+'\')">应用</button> '+
-      '<button class="danger" onclick="delPreset(\''+k.replace(/'/g,"\\'")+'\')">删除</button></td></tr>';
-  });
-  document.getElementById('preset-rows').innerHTML=rows||'<tr><td class="mono">还没有预设</td><td></td><td></td><td></td></tr>';
-}
-
-/* ---------- 连线图（eNSP 风格：从端口拖到端口画线） ---------- */
-let G={ports:{},devices:{}}, DRAG=null, GHOST=null;
-/* 外部接口 = rtpmidid 的 RTP 对端端口（128:x, x≠0）；其余(virmidi/Network Export)=内部链接 */
-function isExternalPort(key){
-  const parts=String(key).split(':');
-  if(parts[0]!=='128') return false;
-  return parts[1]!=='0';
-}
-function isPeerPort(key){ return isExternalPort(key) }
-function linkIsExt(a,b){ return isPeerPort(a)||isPeerPort(b) }
-function svgPt(e){
-  const svg=document.querySelector('#graph svg'); if(!svg) return {x:0,y:0};
-  const r=svg.getBoundingClientRect();
-  return {x:e.clientX-r.left, y:e.clientY-r.top};
-}
-function portAnchorOut(q){ return {x:q.x+q.w-9, y:q.y+q.h/2} }
-function portAnchorIn(q){ return {x:q.x+6, y:q.y+q.h/2} }
-
-function renderGraph(){
-  const clients=(STATE.alsa||[]).filter(c=>c.ports.length&&c.id!==0&&!/PipeWire|Through/.test(c.name));
-  const COLW=236, HEAD=42, ROW=26, PAD=14, PW=COLW-48;
-  G={ports:{},devices:{}};
-  clients.forEach((c,i)=>{
-    const x=PAD+i*COLW, h=HEAD+c.ports.length*ROW+10;
-    G.devices[c.id]={x,y:PAD,w:PW,h,c};
-    c.ports.forEach((p,j)=>{
-      G.ports[c.id+':'+p.id]={x,y:PAD+HEAD+j*ROW,w:PW,h:ROW-6,c,p,key:c.id+':'+p.id};
+function renderDevs(d){
+  const groups={};
+  (d.devices||[]).forEach(x=>{ (groups[x.cat]=groups[x.cat]||[]).push(x); });
+  const ctr=S.counters, out=[];
+  CATORDER.concat(Object.keys(groups).filter(k=>!CATORDER.includes(k))).forEach(cat=>{
+    const list=groups[cat]; if(!list||!list.length) return;
+    out.push(`<div class="grp"><b>${esc(cat)}</b> · ${list.length}</div>`);
+    list.forEach(x=>{
+      const c=ctr[x.key]||{}; const o=c.out||0, i=c.in||0;
+      const sel=(S.dev===x.key)?" sel":"";
+      out.push(`<div class="dev${sel}" data-key="${esc(x.key)}">
+        <div class="n"><span class="name" title="${esc(x.name)}">${esc(x.name)}</span>
+        <span class="rt">${o+i} msgs</span></div>
+        <div class="meta"><span class="mono">${esc(x.port)}</span><span class="o">out ${o}</span><span class="i">in ${i}</span>
+        <span>&rarr;${(x.to||[]).length} &larr;${(x.from||[]).length}</span></div>
+      </div>`);
     });
   });
-  const H=Math.max(140,...Object.values(G.devices).map(d=>d.h))+PAD*2+90;
-  const W=PAD*2+Math.max(1,clients.length)*COLW;
-  const f=document.getElementById('gfilter')?document.getElementById('gfilter').value:'';
-  let g='';
-  Object.values(G.devices).forEach(d=>{
-    const ext=d.c.id===128, vd=d.c.id>=24&&d.c.id<=27;
-    const stroke=ext?'#8a5cd0':(vd?'#3f5b73':'#2c3444');
-    const kind=ext?'RTP-MIDI 网关':(vd?'虚拟口 virmidi':'设备');
-    g+='<rect x="'+d.x+'" y="'+d.y+'" width="'+d.w+'" height="'+d.h+'" rx="9" fill="'+(ext?'#1e1a2b':(vd?'#1a2129':'#1a202b'))+'" stroke="'+stroke+'"/>'+
-       '<text x="'+(d.x+11)+'" y="'+(d.y+18)+'" fill="'+(ext?'#c6a6f5':(vd?'#9ec2dd':'#9fb0c9'))+'" font-size="11">'+escapeHtml(d.c.name)+'</text>'+
-       '<text x="'+(d.x+11)+'" y="'+(d.y+29)+'" fill="#5d697c" font-size="9">'+kind+'</text>'+
-       '<text x="'+(d.x+d.w-9)+'" y="'+(d.y+18)+'" text-anchor="end" fill="#5d697c" font-size="10">#'+d.c.id+'</text>';
+  document.getElementById("devs").innerHTML=out.join("")||`<div class="grp">暂无端口</div>`;
+  document.getElementById("devcount").textContent=(d.devices||[]).length+" 个端口";
+  document.querySelectorAll(".dev").forEach(el=>el.onclick=()=>{
+    S.dev=(S.dev===el.dataset.key)?"":el.dataset.key;
+    document.getElementById("fdev").value=S.dev; renderDevs(d); renderRows();
   });
-  Object.values(G.ports).forEach(q=>{
-    const ext=isPeerPort(q.key), sel=SEL===q.key;
-    g+='<g class="port" data-key="'+q.key+'" style="cursor:crosshair">'+
-      '<rect x="'+(q.x+6)+'" y="'+q.y+'" width="'+(q.w-12)+'" height="'+q.h+'" rx="5" fill="'+(sel?'#1f4a3d':'#202634')+'" stroke="'+(sel?'#41c9a0':(ext?'#e0a14a':'#39425a'))+'"'+((q.key.indexOf('128:')===0)?' stroke-dasharray="1 2"':'')+'/>'+
-      '<circle cx="'+(q.x+q.w-9)+'" cy="'+(q.y+q.h/2)+'" r="4.2" fill="'+(ext?'#e0a14a':'#41c9a0')+'"/>'+
-      '<text x="'+(q.x+12)+'" y="'+(q.y+q.h/2+4)+'" fill="#dfe4ee" font-size="11">'+escapeHtml(wrap(q.p.name).slice(0,20))+'</text>'+
-      '<text x="'+(q.x+q.w-18)+'" y="'+(q.y+q.h/2+4)+'" text-anchor="end" fill="#5d697c" font-size="10">'+q.key+'</text></g>';
-  });
-  const laneBase=H-16; let li=0, drawn=0;
-  (STATE.links||[]).forEach(([a,b])=>{
-    const A=G.ports[a],B=G.ports[b]; if(!A||!B) return;
-    const ext=linkIsExt(a,b);
-    if(f==='ext'&&!ext) return;
-    if(f==='int'&&ext) return;
-    const o=portAnchorOut(A), i=portAnchorIn(B);
-    const lane=laneBase-(li%8)*9; li++;
-    const col=ext?'#e0a14a':'#4d5b70';
-    g+='<path class="cable" d="M'+o.x+' '+o.y+' L'+o.x+' '+lane+' L'+i.x+' '+lane+' L'+i.x+' '+i.y+'" '+
-       'stroke="'+col+'" stroke-width="'+(ext?2.4:1.4)+'" '+
-       (ext?'':'stroke-dasharray="6 4"')+' fill="none" style="cursor:pointer" '+
-       'data-a="'+a+'" data-b="'+b+'" onclick="ltFocus(\''+a+'\',\''+b+'\')"/>';
-    g+='<circle cx="'+i.x+'" cy="'+i.y+'" r="3" fill="'+col+'"/>';
-    drawn++;
-  });
-  window.__drawn=drawn;
-  document.getElementById('graph').innerHTML='<svg width="'+W+'" height="'+H+'" xmlns="http://www.w3.org/2000/svg">'+g+'</svg>';
-  document.getElementById('ghint').textContent =
-    '预览基于当前已生效的连线：共 '+drawn+' 条 / 端口 '+Object.keys(G.ports).length+' 个。点一条线可跳到上表对应行。';
-}
-let LT=null, LTSEL='';
-function portList(){
-  const out=[];
-  (STATE.alsa||[]).filter(c=>c.id!==0&&!/PipeWire|Through/.test(c.name)).forEach(c=>{
-    (c.ports||[]).forEach(p=>out.push({key:c.id+':'+p.id, dev:c.name+((c.id>=24&&c.id<=27)?'（虚拟口）':(c.id===128?'（RTP 网关）':'')), name:p.name}));
-  });
-  return out;
-}
-function optsHtml(cur){
-  let h=''; const groups={}; const order=[];
-  portList().forEach(p=>{ if(!groups[p.dev]){groups[p.dev]=[]; order.push(p.dev)} groups[p.dev].push(p) });
-  order.forEach(dev=>{
-    h+='<optgroup label="'+escapeHtml(dev)+'">';
-    groups[dev].forEach(p=>{
-      h+='<option value="'+p.key+'"'+(p.key===cur?' selected':'')+'>'+p.key+'　'+escapeHtml(wrap(p.name).slice(0,22))+'</option>';
+  const fdev=document.getElementById("fdev");
+  const sig=JSON.stringify((d.devices||[]).map(x=>[x.key,x.cat,x.name]));
+  if(fdev.dataset.sig!==sig){
+    fdev.dataset.sig=sig;
+    const g={}; (d.devices||[]).forEach(x=>{(g[x.cat]=g[x.cat]||[]).push(x);});
+    let h=`<option value="">全部设备</option>`;
+    Object.keys(g).forEach(cat=>{
+      h+=`<optgroup label="${esc(cat)}">`;
+      g[cat].forEach(x=>{ h+=`<option value="${esc(x.key)}">${esc(x.name)}</option>`; });
+      h+=`</optgroup>`;
     });
-    h+='</optgroup>';
-  });
-  return h;
-}
-function currentSet(){ return (STATE.links||[]).filter(x=>!x[0].startsWith('0:')&&!x[1].startsWith('0:')).map(x=>x[0]+'|'+x[1]) }
-function pendingText(){
-  const cur=currentSet(), want=(LT||[]).map(x=>x[0]+'|'+x[1]);
-  const add=want.filter(x=>!cur.includes(x)).length;
-  const del=cur.filter(x=>!want.includes(x)).length;
-  return (add||del)?('未应用：新增 '+add+' 条 / 删除 '+del+' 条'):'与当前生效一致';
-}
-function renderLinkTable(){
-  const rows=(LT||[]).map((r,i)=>
-    '<tr'+(LTSEL===(r[0]+'|'+r[1])?' class="hl"':'')+'>'+
-    '<td><select onchange="ltSet('+i+',0,this.value)">'+optsHtml(r[0])+'</select></td>'+
-    '<td style="text-align:center;color:#7b869b">→</td>'+
-    '<td><select onchange="ltSet('+i+',1,this.value)">'+optsHtml(r[1])+'</select></td>'+
-    '<td><button class="danger" onclick="ltDel('+i+')">删除</button></td></tr>').join('');
-  document.getElementById('link-rows').innerHTML = rows || '<tr><td colspan="4" style="color:#8b94a3;padding:10px">还没有连线 — 点下面「＋ 添加一行」开始。</td></tr>';
-  document.getElementById('lt-state').textContent = pendingText();
-}
-function ltReload(){
-  LT = (STATE.links||[]).filter(x=>!x[0].startsWith('0:')&&!x[1].startsWith('0:')).map(x=>[x[0],x[1]]);
-  LTSEL=''; renderLinkTable();
-}
-function ltSet(i,j,v){ if(!LT[i])return; LT[i][j]=v; renderLinkTable() }
-function ltDel(i){ if(!LT[i])return; LT.splice(i,1); renderLinkTable() }
-function ltAdd(){
-  const ps=portList(); const a=ps[0]?ps[0].key:'', b=ps[ps.length-1]?ps[ps.length-1].key:'';
-  if(!LT) LT=[]; LT.push([a,b]); renderLinkTable();
-}
-function ltFocus(a,b){
-  LTSEL=a+'|'+b; renderLinkTable();
-  const i=(LT||[]).findIndex(r=>r[0]===a&&r[1]===b);
-  const tr=i>=0?document.querySelectorAll('#link-rows tr')[i]:null;
-  if(tr&&tr.scrollIntoView) tr.scrollIntoView({block:'center'});
-}
-async function rbUnlink(a,b){
-  if(!confirm('断开 '+a+' → '+b+' ?')) return;
-  await post('/api/alsa',{op:'unlink',src:a,dst:b}); toast('已断开 '+a+' → '+b); await refresh(); ltReload();
-}
-async function ltApply(){
-  if(!LT||!LT.length) return toast('表格是空的，没有可应用的连线');
-  const r=await post('/api/alsa',{op:'sync',links:LT});
-  if(!r.ok) return toast('失败：'+(r.error||r.out||''));
-  toast('已应用：新增 '+(r.added||[]).length+' 条，删除 '+(r.removed||[]).length+' 条'+
-        ((r.skipped||[]).length?'，跳过 '+(r.skipped||[]).length+' 条（端口已不存在）':''));
-  await refresh(); ltReload();
-}
-async function rtpConnect(hostname,port,name){
-  const r=await post('/api/rtp',{op:'connect',hostname,port,name});
-  toast(r.ok?'已发起连接':'失败：'+(r.error||'')); refresh();
-}
-async function rtpRemove(id){
-  const r=await post('/api/rtp',{op:'remove',id}); toast(r.ok?'已移除':'失败：'+(r.error||'')); refresh();
-}
-async function applyPreset(name){
-  const r=await post('/api/presets',{op:'apply',name});
-  toast(r.ok?('已应用，建立 '+r.done+' 条'+(r.failed&&r.failed.length?('，失败 '+r.failed.length):'')):('失败：'+(r.error||''))); refresh();
-}
-async function delPreset(name){
-  if(!confirm('删除预设 '+name+' ?'))return;
-  await post('/api/presets',{op:'delete',name}); toast('已删除'); refresh();
+    fdev.innerHTML=h; fdev.value=S.dev;
+  }
 }
 
-/* ---------- 监视器 ---------- */
-let MBUF=[];
-function clientName(id){const c=(STATE.alsa||[]).find(x=>String(x.id)===String(id));return c?c.name:(id+'?')}
-function expandRow(m){
-  const rows=[]; const src=m.src||''; const sid=src.split(':')[0];
-  rows.push(Object.assign({},m,{dir:'OUT',port:src,client:clientName(sid),from:null}));
-  (STATE.links||[]).forEach(([a,b])=>{
-    if(a===src && b!==src){ rows.push(Object.assign({},m,{dir:'IN',port:b,client:clientName(b.split(':')[0]),from:src})); }
-  });
-  return rows;
+function renderRtp(d){
+  const peers=(d.rtp&&d.rtp.peers)||[];
+  document.getElementById("rtp").innerHTML = peers.length
+    ? peers.map(p=>`<div class="p"><span>${esc(p.name)}<small> :${esc(p.port)}</small></span>
+        <small>收 ${p.recv} / 发 ${p.sent}${p.latency!=null?" · "+Math.round(p.latency)+"ms":""}</small></div>`).join("")
+    : `<div style="color:var(--sub)">当前没有 RTP 对端会话</div>`;
 }
-function matchRow(r){
-  const dv=document.getElementById('m-dev').value, dd=document.getElementById('m-dir').value;
-  const dk=document.getElementById('m-kind').value, dc=document.getElementById('m-ch').value;
-  if(dv && r.client!==dv) return false;
-  if(dd && r.dir!==dd) return false;
-  if(dk){
-    if(dk==='note'){ if(r.kind!=='note_on'&&r.kind!=='note_off') return false }
-    else if(dk!==r.kind) return false;
+
+function matchRow(e){
+  if(S.dev && e.key!==S.dev) return false;
+  if(S.dir && e.dir!==S.dir) return false;
+  if(S.kinds.size && !S.kinds.has(e.kind||"other")) return false;
+  if(S.ch!=="" && String(e.chan)!==S.ch) return false;
+  if(S.q){
+    const t=(e.event+" "+(e.d1==null?"":e.d1)+" "+(e.d2==null?"":e.d2)+" "+(e.note||"")+" "+(e.raw||"")).toLowerCase();
+    if(!t.includes(S.q.toLowerCase())) return false;
   }
-  if(dc!=='' && String(r.chan)!==dc) return false;
   return true;
 }
-function renderMon(){
-  const rows=MBUF.filter(matchRow).slice(-300);
-  document.getElementById('mon-count').textContent=MBUF.length;
-  document.getElementById('mon-rows').innerHTML=rows.map(r=>{
-    const t=new Date(r.t*1000).toLocaleTimeString('zh-CN',{hour12:false});
-    const cls=r.dir==='IN'?'ok':'';
-    const ev=r.event||'';
-    const data=r.text||'';
-    return '<tr title="'+escapeHtml(r.raw||'')+'"><td class="mono">'+t+'</td>'+
-      '<td><span class="pill '+cls+'">'+r.dir+'</span></td>'+
-      '<td class="mono">'+r.port+'</td><td>'+escapeHtml(r.client||'')+'</td>'+
-      '<td class="mono">'+(r.chan==null?'-':r.chan)+'</td>'+
-      '<td>'+escapeHtml(ev)+'</td><td class="mono">'+escapeHtml(data)+'</td>'+
-      '<td class="mono">'+(r.note||'')+'</td></tr>';
-  }).join('')||'<tr><td class="mono" colspan="8">暂无匹配消息</td></tr>';
-}
-function fillDevFilter(){
-  const sel=document.getElementById('m-dev'), v=sel.value;
-  const names=[...new Set((STATE.alsa||[]).filter(c=>c.id!==0).map(c=>c.name))];
-  sel.innerHTML='<option value="">设备：全部</option>'+names.map(n=>'<option>'+escapeHtml(n)+'</option>').join('');
-  if(v)sel.value=v;
-  const ch=document.getElementById('m-ch'), cv=ch.value;
-  ch.innerHTML='<option value="">通道：全部</option>'+Array.from({length:16},(_,i)=>'<option value="'+i+'">CH '+(i+1)+'</option>').join('');
-  if(cv)ch.value=cv;
-}
-async function monStart(){
-  const port=document.getElementById('mon-port').value;
-  const r=await post('/api/monitor',{op:'start',port});
-  toast(r.ok?('开始监视 '+port):'启动失败');
-  MSINCE=0; MBUF=[]; renderMon();
-  clearInterval(MTIMER);
-  MTIMER=setInterval(async()=>{
-    const d=await api('/api/monitor?port='+encodeURIComponent(port)+'&since='+MSINCE);
-    if(!d.msgs||!d.msgs.length)return;
-    MSINCE=d.last;
-    d.msgs.forEach(m=>{ MBUF.push(...expandRow(m)) });
-    if(MBUF.length>800) MBUF=MBUF.slice(-800);
-    renderMon();
-  },900);
-}
-async function monStop(){
-  const port=document.getElementById('mon-port').value;
-  clearInterval(MTIMER); MTIMER=null;
-  await post('/api/monitor',{op:'stop',port}); toast('已停止');
+
+function renderRows(){
+  const list=S.rows.filter(matchRow).slice(-400).reverse();
+  const html=list.map(e=>`<tr title="${esc(e.raw)}">
+    <td class="mono">${hhmmss(e.t)}</td>
+    <td class="${e.dir==="out"?"d-out":"d-in"}">${e.dir==="out"?"OUT":"IN"}</td>
+    <td>${esc(e.name)}</td><td class="mono">${esc(e.port)}</td>
+    <td>${e.chan==null?"":e.chan}</td>
+    <td>${esc(e.event)}</td>
+    <td class="mono">${e.d1==null?"":e.d1}${e.d2==null?"":" , "+e.d2}</td>
+    <td class="mono">${esc(e.note||"")}</td></tr>`).join("");
+  document.getElementById("rows").innerHTML=html ||
+    `<tr><td colspan="8" style="padding:18px;color:var(--sub)">暂无匹配事件（链路安静时这里是空的，属正常）</td></tr>`;
 }
 
-/* ---------- 交互 ---------- */
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
-  CURTAB=b.dataset.tab;
-  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));
-  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id==='p-'+CURTAB));
+function calcRate(d){
+  const ctr=d.counters||{};
+  let total=0; for(const k in ctr) total+=(ctr[k].out||0)+(ctr[k].in||0);
+  const now=Date.now()/1000;
+  if(S.tPrev){ S.rate=Math.max(0,(total-S.evTotal)/Math.max(0.2,now-S.tPrev)); }
+  S.evTotal=total; S.tPrev=now;
+  document.getElementById("rate").textContent=`${S.rate.toFixed(1)} msg/s · 累计 ${total}`;
+}
+
+async function poll(){
+  try{
+    const r=await fetch(`/api/observe?since=${S.since}`,{cache:"no-store"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const d=await r.json();
+    S.counters=d.counters||{};
+    chips(d); renderDevs(d); renderRtp(d); calcRate(d);
+    if(!S.paused){
+      (d.events||[]).forEach(e=>S.rows.push(e));
+      if(S.rows.length>1200) S.rows.splice(0,S.rows.length-1200);
+      renderRows();
+    }
+    S.since=Math.max(S.since,d.last||0);
+  }catch(err){
+    document.getElementById("foot").textContent="读取失败："+err.message+"（观察器可能正在重启订阅）";
+  }
+}
+
+document.getElementById("fdev").onchange=e=>{S.dev=e.target.value; renderRows();};
+document.getElementById("fch").onchange=e=>{S.ch=e.target.value; renderRows();};
+document.getElementById("fq").oninput=e=>{S.q=e.target.value; renderRows();};
+document.querySelectorAll("[data-dir]").forEach(b=>b.onclick=()=>{
+  S.dir=b.dataset.dir;
+  document.querySelectorAll("[data-dir]").forEach(x=>x.classList.toggle("on",x===b));
+  renderRows();
 });
-document.getElementById('rtp-add').onclick=()=>{const h=document.getElementById('rtp-host').value.trim(); if(h)rtpConnect(h,+document.getElementById('rtp-port').value,'');};
-document.getElementById('allink').onclick=async()=>{const s=alsrc.value,d=aldst.value; const r=await post('/api/alsa',{op:'link',src:s,dst:d}); toast(r.ok?'已连接':'失败'); refresh();};
-document.getElementById('allink-both').onclick=async()=>{const s=alsrc.value,d=aldst.value; await post('/api/alsa',{op:'link',src:s,dst:d,both:true}); toast('已双向连接'); refresh();};
-document.getElementById('alunlink').onclick=async()=>{const s=alsrc.value,d=aldst.value; await post('/api/alsa',{op:'unlink',src:s,dst:d}); toast('已断开'); refresh();};
-document.getElementById('alrefresh').onclick=refresh;
-document.getElementById('preset-save').onclick=async()=>{
-  const name=document.getElementById('preset-name').value.trim(); if(!name)return toast('先起个名字');
-  const r=await post('/api/presets',{op:'save',name}); toast(r.ok?'已保存':'失败：'+(r.error||'')); refresh();
+document.getElementById("kinds").innerHTML=KINDS.map(([k,label])=>
+  `<button data-kind="${k}">${label}</button>`).join("");
+document.querySelectorAll("[data-kind]").forEach(b=>b.onclick=()=>{
+  const k=b.dataset.kind;
+  S.kinds.has(k)?S.kinds.delete(k):S.kinds.add(k);
+  b.classList.toggle("on",S.kinds.has(k));
+  renderRows();
+});
+document.getElementById("pause").onclick=e=>{
+  S.paused=!S.paused;
+  e.target.classList.toggle("on",S.paused);
+  e.target.textContent=S.paused?"继续":"暂停";
 };
-document.getElementById('lt-add').onclick=ltAdd;
-document.getElementById('lt-apply').onclick=ltApply;
-document.getElementById('lt-reload').onclick=ltReload;
-document.getElementById('gfilter').onchange=renderGraph;
-document.getElementById('auto-snap').onclick=async()=>{
-  const r=await post('/api/autorestore',{snapshot:true}); toast('已记录 '+(r.links||[]).length+' 条连线'); refresh();
-};
-document.getElementById('auto-on').onchange=async e=>{
-  await post('/api/autorestore',{enabled:e.target.checked, snapshot:true});
-  toast(e.target.checked?'已开启开机恢复':'已关闭开机恢复'); refresh();
-};
-['m-dev','m-dir','m-kind','m-ch'].forEach(id=>document.getElementById(id).onchange=renderMon);
-document.getElementById('mon-start').onclick=monStart;
-document.getElementById('mon-stop').onclick=monStop;
+document.getElementById("clear").onclick=()=>{S.rows=[];renderRows();};
+(function(){
+  let h=`<option value="">全部通道</option>`;
+  for(let i=0;i<16;i++) h+=`<option value="${i}">Ch ${i+1}</option>`;
+  document.getElementById("fch").innerHTML=h;
+})();
 
-refresh(); setInterval(refresh, 3000);
+poll(); setInterval(poll,900);
 </script>
 </body>
 </html>

@@ -25,7 +25,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 WEBROOT = os.environ.get("WEBROOT", "/usr/share/pi-midi-bridge/web")
 BIND = os.environ.get("WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
@@ -380,6 +380,227 @@ def apply_links(pairs, clear_first=True):
     return done, failed
 
 
+
+# ---------------------------------------------------------------- 纯观测：全局 MIDI 观察器
+CAT_BLE = "蓝牙 Pi-MIDI"
+CAT_VIR = "内部虚拟口"
+CAT_HUB = "内部桥（RTP 引擎）"
+CAT_RTP = "RTP 外部设备"
+CAT_SYS = "系统"
+CAT_OTHER = "其它"
+
+HEALTH_RE = re.compile(r"\[体检\].*?累计\s+BLE收\s+(\d+)\s+发\s+(\d+)\s+丢\s+(\d+)")
+PEER_RE = re.compile(r"已连接\s+(\S+)")
+
+
+def bridge_health():
+    """从桥日志里读最后一行的累计计数，纯展示用"""
+    out = {"ble_recv": 0, "ble_sent": 0, "ble_drop": 0, "bridge_active": False}
+    try:
+        with open(LOG) as f:
+            for line in f:
+                if m := HEALTH_RE.search(line):
+                    out["ble_recv"] = int(m.group(1))
+                    out["ble_sent"] = int(m.group(2))
+                    out["ble_drop"] = int(m.group(3))
+    except OSError:
+        pass
+    try:
+        out["bridge_active"] = subprocess.run(["systemctl", "is-active", "pi-midi-bridge"],
+                                              capture_output=True, text=True).stdout.strip() == "active"
+    except Exception:                                  # noqa: BLE001
+        pass
+    return out
+
+
+def classify(client):
+    """给每个 ALSA client / 端口归到人看得懂的类别"""
+    name, cid = client["name"], client["id"]
+    if cid == 0 or "Through" in name or "PipeWire" in name:
+        return CAT_SYS, "system"
+    if "Virtual Raw MIDI" in name or "VirMIDI" in name:
+        return CAT_VIR, "virt"
+    if cid == 128:
+        return CAT_HUB, "hub"
+    return CAT_OTHER, "other"
+
+
+def device_index():
+    """端口 -> 设备key、设备清单。RTP 对端在 rtpmidid 里是 128:x 端口，按端口拆成独立设备"""
+    port_key, devices, ignore = {}, [], set()
+    for c in alsa_state():
+        # 观察器自己的 aseqdump 客户端会以 129:0 出现，属于测量噪声，不进设备表
+        if "aseqdump" in c["name"].strip().lower():
+            for p2 in c["ports"]:
+                ignore.add(f"{c['id']}:{p2['id']}")
+            continue
+        cat, tag = classify(c)
+        if tag == "system":
+            continue
+        for p in c["ports"]:
+            pid = f"{c['id']}:{p['id']}"
+            if c["id"] == 128 and p["id"] == 0:
+                key, name, cat2 = "hub", "RTP 引擎导出口", CAT_HUB
+            elif c["id"] == 128:
+                # rtpmidid 每次重连都新注册一个 128:x 端口，同名对端合并成一个设备
+                key, name, cat2 = "rtp:" + (p["name"].strip() or pid), p["name"].strip() or pid, CAT_RTP
+            else:
+                key, name, cat2 = pid, (c["name"] if len(c["ports"]) == 1
+                                        else f"{c['name']} / {p['name'].strip()}"), cat
+            port_key[pid] = key
+            for d in devices:
+                if d["key"] == key:
+                    d["ports"].append(pid)
+                    for x in p["to"]:
+                        if x not in d["to"]:
+                            d["to"].append(x)
+                    for x in p["from"]:
+                        if x not in d["from"]:
+                            d["from"].append(x)
+                    break
+            else:
+                devices.append({"key": key, "name": name, "cat": cat2, "port": pid,
+                                "ports": [pid], "client": c["id"], "client_name": c["name"],
+                                "to": list(p["to"]), "from": list(p["from"])})
+    for d in devices:
+        if len(d["ports"]) > 1:
+            d["port"] = d["ports"][0] + " ~ " + d["ports"][-1] + "（" + str(len(d["ports"])) + " 口）"
+    return port_key, devices, ignore
+
+
+class Observer:
+    """一条 aseqdump 看全部端口：OUT = 该端口自己发出，IN = 按当前 aconnect 路由推出来的下游"""
+
+    MAX = 1500
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.events = []
+        self.n = 0
+        self.proc = None
+        self.spec = None
+        self.port_key = {}
+        self.devices = []
+        self.ignore = set()
+        self.links = {}
+        self.counters = {}
+        self.sig = ""
+        self.started = time.time()
+        self.watchdog = threading.Thread(target=self._watch, daemon=True)
+
+    # ---- 设备/路由快照
+    def refresh(self, force=False):
+        try:
+            pk, dv, ig = device_index()
+        except Exception:                              # noqa: BLE001
+            return
+        lk = {}
+        for a, b in alsa_links():
+            lk.setdefault(a, []).append(b)
+        with self.lock:
+            self.port_key, self.devices, self.links, self.ignore = pk, dv, lk, ig
+            self.sig = "|".join(sorted(pk))
+
+    def _watch(self):
+        while True:
+            time.sleep(5)
+            self.refresh()
+            cur = None
+            with self.lock:
+                cur = self.sig
+            if cur and cur != self.spec:
+                self.restart()
+
+    # ---- aseqdump
+    def restart(self):
+        self.stop()
+        cand = all_ports_list()
+        for _ in range(8):
+            if not cand:
+                return
+            target = ",".join(cand)
+            try:
+                r = subprocess.run(["aseqdump", "-p", target],
+                                   capture_output=True, text=True, timeout=0.6)
+            except subprocess.TimeoutExpired:
+                break
+            m = re.search(r"Cannot connect from port (\d+:\d+)", r.stdout + r.stderr)
+            if not m:
+                break
+            cand.remove(m.group(1))
+        if not cand:
+            return
+        target = ",".join(cand)
+        try:
+            p = subprocess.Popen(["aseqdump", "-p", target], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        except Exception:                              # noqa: BLE001
+            return
+        with self.lock:
+            self.proc, self.spec = p, self.sig
+        threading.Thread(target=self._run, args=(p,), daemon=True).start()
+        print(f"[web] 观察器已订阅 {len(cand)} 个端口", flush=True)
+
+    def stop(self):
+        with self.lock:
+            p, self.proc = self.proc, None
+        if p:
+            try:
+                p.terminate()
+            except Exception:                          # noqa: BLE001
+                pass
+
+    def _bump(self, key, direction):
+        c = self.counters.setdefault(key, {"out": 0, "in": 0})
+        c[direction] = c.get(direction, 0) + 1
+
+    def _run(self, proc):
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if (not line or line.startswith("Waiting") or line.startswith("Port")
+                        or line.startswith("Source") or line.lower().startswith("timestamp")):
+                    continue
+                rec = parse_event(line)
+                src = rec.get("src")
+                if not src:
+                    continue
+                with self.lock:
+                    key = self.port_key.get(src, src)
+                    name = next((d["name"] for d in self.devices if d["key"] == key), src)
+                    self.n += 1
+                    base = {"n": self.n, "t": round(time.time(), 3), "port": src,
+                            "key": key, "name": name, "chan": rec["chan"],
+                            "kind": rec["kind"], "event": rec["event"],
+                            "d1": rec["d1"], "d2": rec["d2"], "note": rec["note"],
+                            "raw": line}
+                    self.events.append(dict(base, dir="out"))
+                    self._bump(key, "out")
+                    for dst in self.links.get(src, []):
+                        if dst in self.ignore:
+                            continue
+                        k2 = self.port_key.get(dst, dst)
+                        n2 = next((d["name"] for d in self.devices if d["key"] == k2), dst)
+                        self.n += 1
+                        self.events.append(dict(base, n=self.n, dir="in", key=k2,
+                                                name=n2, port=dst))
+                        self._bump(k2, "in")
+                    if len(self.events) > self.MAX:
+                        del self.events[:len(self.events) - self.MAX]
+        finally:
+            with self.lock:
+                self.proc = None
+
+    # ---- 查询
+    def since(self, since):
+        with self.lock:
+            return ([e for e in self.events if e["n"] > since], self.n,
+                    list(self.devices), dict(self.counters), self.proc is not None)
+
+
+OBSERVER = Observer()
+
+
 # ---------------------------------------------------------------- HTTP
 class Handler(BaseHTTPRequestHandler):
     server_version = f"pi-midi-web/{VERSION}"
@@ -436,6 +657,32 @@ class Handler(BaseHTTPRequestHandler):
             if not port:
                 return self._err("需要 port")
             return self._ok(MONITOR.poll(port, since))
+        if path == "/api/observe":
+            if not self._auth():
+                return self._err("需要 token", 401)
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            since = int((q.get("since") or ["0"])[0] or 0)
+            evs, last, devs, counters, running = OBSERVER.since(since)
+            rt = rtp_rpc("status").get("result") or {}
+            SKIP_PEER = ("aseqdump", "network export", "midi through", "virtual raw midi",
+                         "rpi3", "<->")
+            seen_peer, peers = set(), []
+            for r in (rt.get("router") or []):
+                nm = (r.get("name") or "").strip()
+                low = nm.lower()
+                if not nm or any(k in low for k in SKIP_PEER) or nm in seen_peer:
+                    continue
+                seen_peer.add(nm)
+                peers.append({"name": nm, "port": r.get("port"),
+                              "latency": (r.get("peer") or {}).get("latency_ms", {}).get("average"),
+                              "recv": ((r.get("peer") or {}).get("stats") or {}).get("recv", 0),
+                              "sent": ((r.get("peer") or {}).get("stats") or {}).get("sent", 0),
+                              "type": r.get("type")})
+            return self._ok({"version": VERSION, "ble": ble_state(),
+                             "bridge": bridge_health(), "rtp": {"peers": peers},
+                             "devices": devs, "counters": counters,
+                             "events": evs, "last": last, "running": running})
         if path == "/api/presets":
             if not self._auth():
                 return self._err("需要 token", 401)
@@ -604,6 +851,9 @@ def restore_on_boot():
 
 def main():
     os.makedirs(os.path.dirname(PRESET_FILE), exist_ok=True)
+    OBSERVER.refresh(force=True)
+    OBSERVER.watchdog.start()
+    OBSERVER.restart()
     threading.Thread(target=restore_on_boot, daemon=True).start()
     print(f"[web] pi-midi-web {VERSION} 监听 {BIND}:{PORT} token={'有' if TOKEN else '无'}",
           flush=True)
